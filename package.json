@@ -9,7 +9,9 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
-    "rebuild": "electron-rebuild -f -w node-pty"
+    "rebuild": "node scripts/rebuild-pty.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "postinstall": "node scripts/rebuild-pty.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
