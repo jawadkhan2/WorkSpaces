@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WorkSpaces</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-alt: #010409;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #2f81f7;
+    --accent-dim: #1f6feb;
+    --green: #3fb950;
+    --amber: #d29922;
+    --red: #f85149;
+    --term-bg: #0a0e14;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .mono { font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace; }
+
+  /* ---------- Title bar ---------- */
+  .titlebar {
+    height: 40px;
+    background: var(--bg-alt);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .traffic { display: flex; gap: 8px; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; }
+  .traffic .c1 { background: #ff5f56; }
+  .traffic .c2 { background: #ffbd2e; }
+  .traffic .c3 { background: #27c93f; }
+  .titlebar .app-name { font-size: 14px; font-weight: 600; letter-spacing: .3px; margin-left: 8px; }
+  .titlebar .app-name span { color: var(--accent); }
+
+  /* ---------- Main layout ---------- */
+  .layout { flex: 1; display: flex; min-height: 0; }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    width: 240px;
+    background: var(--bg-alt);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  .sidebar-head {
+    padding: 18px 18px 12px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar-head h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px;
+    color: var(--text-dim); font-weight: 600;
+  }
+  .add-btn {
+    width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text-dim); cursor: pointer;
+    font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  }
+  .add-btn:hover { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
+
+  .ws-list { flex: 1; overflow-y: auto; padding: 4px 10px; }
+  .ws {
+    position: relative;
+    padding: 11px 12px 11px 14px; border-radius: 10px; cursor: pointer;
+    display: flex; align-items: center; gap: 11px; margin-bottom: 3px;
+    border: 1px solid transparent;
+  }
+  .ws:hover { background: var(--panel); }
+  .ws:hover .rename { opacity: 1; }
+  .ws.active { background: var(--panel-2); border-color: var(--border); }
+  /* blue accent bar on the active workspace */
+  .ws.active::before {
+    content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 18px; border-radius: 2px; background: var(--accent);
+  }
+  /* uniform folder glyph — no per-project colors */
+  .ws .folder { width: 17px; height: 17px; flex-shrink: 0; color: var(--text-dim); }
+  .ws.active .folder { color: var(--accent); }
+  .ws .name {
+    font-size: 14px; font-weight: 500; flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    outline: none; border-radius: 4px;
+  }
+  .ws .name[contenteditable="true"] {
+    background: var(--bg); box-shadow: 0 0 0 2px var(--accent); padding: 1px 4px; margin: -1px -4px;
+  }
+  .ws .rename {
+    opacity: 0; color: var(--text-dim); font-size: 13px; cursor: pointer; flex-shrink: 0;
+    transition: opacity .12s;
+  }
+  .ws .rename:hover { color: var(--text); }
+  .ws .live {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+    box-shadow: 0 0 6px var(--green); flex-shrink: 0;
+  }
+
+  /* ---------- Right pane ---------- */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+
+  .ws-bar {
+    height: 56px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 20px; gap: 12px; flex-shrink: 0;
+  }
+  .ws-bar .title { font-size: 16px; font-weight: 600; }
+  .ws-bar .sub { font-size: 12px; color: var(--text-dim); }
+  .ws-bar .spacer { flex: 1; }
+  .ws-bar button {
+    background: var(--accent); border: 1px solid var(--accent); color: #fff;
+    font-size: 13px; font-weight: 500; padding: 9px 16px; border-radius: 9px; cursor: pointer;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .ws-bar button:hover { background: #4c94f8; border-color: #4c94f8; }
+  .ws-bar button.ghost {
+    background: var(--panel); border-color: var(--border); color: var(--text);
+  }
+  .ws-bar button.ghost:hover { border-color: var(--accent); }
+
+  /* ---------- Arrange menu ---------- */
+  .arrange-wrap { position: relative; }
+  .arrange-menu {
+    position: absolute; top: calc(100% + 8px); right: 0; z-index: 20;
+    width: 240px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.5);
+    display: none;
+  }
+  .arrange-menu.open { display: block; }
+  .arrange-menu .am-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-dim); font-weight: 600; margin-bottom: 10px; padding: 0 2px;
+  }
+  .am-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .am-opt {
+    border: 1px solid var(--border); border-radius: 9px; padding: 10px;
+    cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--text-dim); background: var(--bg);
+  }
+  .am-opt:hover { border-color: var(--accent); color: var(--text); }
+  .am-opt.active { border-color: var(--accent); color: var(--text); background: rgba(47,129,247,.1); }
+  .am-opt .thumb {
+    width: 100%; height: 40px; display: grid; gap: 3px;
+    grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+  }
+  .am-opt .thumb.rows { grid-template-columns: 1fr; }
+  .am-opt .thumb span { background: var(--text-dim); border-radius: 3px; }
+  .am-opt:hover .thumb span, .am-opt.active .thumb span { background: var(--accent); }
+
+  /* ---------- Terminal grid ---------- */
+  .term-area { flex: 1; padding: 14px; min-height: 0; overflow: hidden; }
+  .grid {
+    height: 100%; display: grid; gap: 14px;
+    grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+  }
+  .grid.layout-single { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+  .grid.layout-single .term:not(:first-child) { display: none; }
+  .grid.layout-cols { grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr; }
+  .grid.layout-rows { grid-template-columns: 1fr; grid-template-rows: repeat(3, 1fr); }
+  .grid.layout-grid { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+  .term {
+    background: var(--term-bg); border: 1px solid var(--border); border-radius: 12px;
+    display: flex; flex-direction: column; overflow: hidden; transition: border-color .12s;
+  }
+  .term.focused { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .term-head {
+    height: 38px; background: var(--panel); display: flex; align-items: center;
+    padding: 0 14px; gap: 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .term-head .agent {
+    font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 7px;
+  }
+  .term-head .agent .glyph {
+    width: 20px; height: 20px; border-radius: 6px; display: flex; align-items: center;
+    justify-content: center; font-size: 11px; font-weight: 700; color: #fff;
+  }
+  .term-head .status {
+    font-size: 11px; padding: 2px 9px; border-radius: 20px; font-weight: 500;
+  }
+  .status.running { background: rgba(63,185,80,.15); color: var(--green); }
+  .status.waiting { background: rgba(210,153,34,.15); color: var(--amber); }
+  .status.idle { background: var(--panel-2); color: var(--text-dim); }
+  .term-head .admin-badge {
+    font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 20px;
+    background: rgba(248,81,73,.15); color: var(--red); display: flex; align-items: center; gap: 5px;
+  }
+  .term-head .spacer { flex: 1; }
+  .term-head .ctl { color: var(--text-dim); font-size: 14px; cursor: pointer; padding: 3px 5px; border-radius: 5px; }
+  .term-head .ctl:hover { color: var(--text); background: var(--panel-2); }
+  .term-head .ctl.shield.on { color: var(--red); }
+  .term.admin { border-color: rgba(248,81,73,.5); }
+  .term.admin .term-head { background: rgba(248,81,73,.08); }
+  .term-body {
+    flex: 1; padding: 12px 14px; font-family: "SF Mono","Cascadia Code",Consolas,monospace;
+    font-size: 12.5px; line-height: 1.6; overflow-y: auto; color: #c9d1d9;
+  }
+  .term-body .c { color: var(--text-dim); }
+  .term-body .a { color: #d97757; }
+  .term-body .g { color: var(--green); }
+  .term-body .w { color: var(--amber); }
+  .term-body .u { color: var(--accent); }
+  .term-body .p { color: var(--green); }
+  .term-body .cursor { background: var(--text); color: var(--term-bg); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* empty add-terminal tile */
+  .term.add {
+    background: transparent; border: 2px dashed var(--border);
+    align-items: center; justify-content: center; cursor: pointer; color: var(--text-dim);
+  }
+  .term.add:hover { border-color: var(--accent); color: var(--text); }
+  .term.add .plus { font-size: 30px; font-weight: 200; line-height: 1; }
+  .term.add .lbl { font-size: 13px; margin-top: 8px; }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+
+  <!-- Title bar -->
+  <div class="titlebar">
+    <div class="traffic"><span class="c1"></span><span class="c2"></span><span class="c3"></span></div>
+    <div class="app-name">Work<span>Spaces</span></div>
+  </div>
+
+  <div class="layout">
+
+    <!-- Sidebar: workspaces -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>Workspaces</h2>
+        <button class="add-btn" title="Add workspace">+</button>
+      </div>
+      <div class="ws-list">
+
+        <div class="ws active">
+          <svg class="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <div class="name">api-gateway</div>
+          <div class="live" title="Agents running"></div>
+          <div class="rename" title="Rename">✎</div>
+        </div>
+
+        <div class="ws">
+          <svg class="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <div class="name">web-app</div>
+          <div class="live" title="Agents running"></div>
+          <div class="rename" title="Rename">✎</div>
+        </div>
+
+        <div class="ws">
+          <svg class="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <div class="name">ml-pipeline</div>
+          <div class="rename" title="Rename">✎</div>
+        </div>
+
+        <div class="ws">
+          <svg class="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <div class="name">infra</div>
+          <div class="rename" title="Rename">✎</div>
+        </div>
+
+        <div class="ws">
+          <svg class="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <div class="name">docs-site</div>
+          <div class="rename" title="Rename">✎</div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- Right pane -->
+    <section class="main">
+
+      <div class="ws-bar">
+        <div>
+          <div class="title">api-gateway</div>
+          <div class="sub mono">~/dev/api-gateway</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="arrange-wrap">
+          <button class="ghost" id="arrangeBtn">⊞ Arrange</button>
+          <div class="arrange-menu" id="arrangeMenu">
+            <div class="am-title">Terminal layout</div>
+            <div class="am-grid">
+              <div class="am-opt" data-layout="single">
+                <div class="thumb"><span style="grid-column:1/3;grid-row:1/3"></span></div>
+                <span>Single</span>
+              </div>
+              <div class="am-opt" data-layout="cols">
+                <div class="thumb"><span></span><span></span></div>
+                <span>Side by side</span>
+              </div>
+              <div class="am-opt" data-layout="rows">
+                <div class="thumb rows"><span></span><span></span></div>
+                <span>Stacked</span>
+              </div>
+              <div class="am-opt active" data-layout="grid">
+                <div class="thumb"><span></span><span></span><span></span><span></span></div>
+                <span>Grid</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button>+ New terminal</button>
+      </div>
+
+      <!-- 2x2 terminal grid -->
+      <div class="term-area">
+        <div class="grid layout-grid" id="termGrid">
+
+          <!-- Terminal 1 -->
+          <div class="term focused">
+            <div class="term-head">
+              <span class="agent"><span class="glyph" style="background:#d97757">C</span> Claude Code</span>
+              <span class="status running">running</span>
+              <span class="spacer"></span>
+              <span class="ctl shield" title="Run as admin">🛡</span><span class="ctl">⤢</span><span class="ctl">✕</span>
+            </div>
+            <div class="term-body mono">
+              <div class="a">● I'll refactor the auth middleware now.</div>
+              <div class="c">  Reading src/middleware/auth.ts…</div>
+              <div class="a">● Found token expiry using <span class="w">&lt;</span> — should be <span class="g">&lt;=</span>.</div>
+              <div class="c">  Editing auth.ts (1 change)</div>
+              <div class="g">  ✓ Applied. Running tests…</div>
+              <div>&nbsp;</div>
+              <div><span class="c">&gt;</span> <span class="cursor">&nbsp;</span></div>
+            </div>
+          </div>
+
+          <!-- Terminal 2 -->
+          <div class="term">
+            <div class="term-head">
+              <span class="agent"><span class="glyph" style="background:#d97757">C</span> Claude Code</span>
+              <span class="status waiting">needs you</span>
+              <span class="spacer"></span>
+              <span class="ctl shield" title="Run as admin">🛡</span><span class="ctl">⤢</span><span class="ctl">✕</span>
+            </div>
+            <div class="term-body mono">
+              <div class="a">● Ready to run the tests:</div>
+              <div class="c">  <span class="w">npm run test:integration</span></div>
+              <div>&nbsp;</div>
+              <div class="c">  [y] yes   [n] no</div>
+              <div><span class="w">❯</span> <span class="cursor">&nbsp;</span></div>
+            </div>
+          </div>
+
+          <!-- Terminal 3 (elevated) -->
+          <div class="term admin">
+            <div class="term-head">
+              <span class="agent"><span class="glyph" style="background:#3fb950">$</span> Terminal</span>
+              <span class="admin-badge">🛡 Admin</span>
+              <span class="spacer"></span>
+              <span class="ctl shield on" title="Running as admin — click to drop">🛡</span><span class="ctl">⤢</span><span class="ctl">✕</span>
+            </div>
+            <div class="term-body mono">
+              <div><span class="p">➜</span> <span class="u">api-gateway</span> <span class="c"># elevated shell</span></div>
+              <div><span class="p">#</span> npm install -g @anthropic-ai/claude-code</div>
+              <div class="g">  added 1 package in 3s</div>
+              <div>&nbsp;</div>
+              <div><span class="p">#</span> <span class="cursor">&nbsp;</span></div>
+            </div>
+          </div>
+
+          <!-- Add terminal tile -->
+          <div class="term add">
+            <div class="plus">+</div>
+            <div class="lbl">New terminal</div>
+          </div>
+
+        </div>
+      </div>
+
+    </section>
+  </div>
+
+<script>
+  // inline rename demo
+  document.querySelectorAll('.ws .rename').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var name = btn.parentElement.querySelector('.name');
+      name.setAttribute('contenteditable', 'true');
+      name.focus();
+      document.execCommand('selectAll', false, null);
+    });
+  });
+  document.querySelectorAll('.ws .name').forEach(function (name) {
+    function done() {
+      name.removeAttribute('contenteditable');
+      window.getSelection().removeAllRanges();
+    }
+    name.addEventListener('blur', done);
+    name.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); name.blur(); }
+      if (e.key === 'Escape') { name.blur(); }
+    });
+  });
+  // Arrange menu: open/close + pick layout
+  var arrangeBtn = document.getElementById('arrangeBtn');
+  var arrangeMenu = document.getElementById('arrangeMenu');
+  var termGrid = document.getElementById('termGrid');
+  arrangeBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    arrangeMenu.classList.toggle('open');
+  });
+  document.addEventListener('click', function () { arrangeMenu.classList.remove('open'); });
+  arrangeMenu.addEventListener('click', function (e) { e.stopPropagation(); });
+  document.querySelectorAll('.am-opt').forEach(function (opt) {
+    opt.addEventListener('click', function () {
+      document.querySelectorAll('.am-opt').forEach(function (o) { o.classList.remove('active'); });
+      opt.classList.add('active');
+      termGrid.className = 'grid layout-' + opt.dataset.layout;
+      arrangeMenu.classList.remove('open');
+    });
+  });
+
+  // toggle admin / elevated on a terminal
+  document.querySelectorAll('.term-head .shield').forEach(function (sh) {
+    sh.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var term = sh.closest('.term');
+      var head = sh.closest('.term-head');
+      var isAdmin = term.classList.contains('admin');
+      if (!isAdmin) {
+        if (!confirm('Run this terminal as Administrator?\nThe agent will have full access to your system.')) return;
+        term.classList.add('admin');
+        sh.classList.add('on');
+        sh.title = 'Running as admin — click to drop';
+        if (!head.querySelector('.admin-badge')) {
+          var b = document.createElement('span');
+          b.className = 'admin-badge';
+          b.textContent = '🛡 Admin';
+          head.insertBefore(b, head.querySelector('.status') || head.querySelector('.spacer'));
+        }
+      } else {
+        term.classList.remove('admin');
+        sh.classList.remove('on');
+        sh.title = 'Run as admin';
+        var badge = head.querySelector('.admin-badge');
+        if (badge) badge.remove();
+      }
+    });
+  });
+
+  // select workspace
+  document.querySelectorAll('.ws').forEach(function (ws) {
+    ws.addEventListener('click', function () {
+      document.querySelectorAll('.ws').forEach(function (w) { w.classList.remove('active'); });
+      ws.classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>
