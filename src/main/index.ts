@@ -3,6 +3,12 @@ import { join } from 'path'
 import { getStore } from './store'
 import { PtyManager } from './pty-manager'
 import { registerIpc } from './ipc'
+import { runBroker } from './broker'
+
+// Elevated PTY broker mode (PLAN.md §6): a second, UAC-elevated instance of
+// this app launched with --pty-broker. It hosts one terminal's node-pty and
+// bridges it over a named pipe — no window, no IPC, no store.
+const IS_BROKER = process.argv.includes('--pty-broker')
 
 let mainWindow: BrowserWindow | null = null
 let ptyManager: PtyManager | null = null
@@ -67,22 +73,27 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
-  ptyManager = new PtyManager(() => mainWindow)
-  registerIpc(ptyManager, () => mainWindow)
-  createWindow()
+if (IS_BROKER) {
+  app.disableHardwareAcceleration()
+  runBroker()
+} else {
+  app.whenReady().then(() => {
+    ptyManager = new PtyManager(() => mainWindow)
+    registerIpc(ptyManager, () => mainWindow)
+    createWindow()
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
   })
-})
 
-app.on('before-quit', () => {
-  isQuitting = true
-  ptyManager?.killAll()
-})
+  app.on('before-quit', () => {
+    isQuitting = true
+    ptyManager?.killAll()
+  })
 
-app.on('window-all-closed', () => {
-  ptyManager?.killAll()
-  if (process.platform !== 'darwin') app.quit()
-})
+  app.on('window-all-closed', () => {
+    ptyManager?.killAll()
+    if (process.platform !== 'darwin') app.quit()
+  })
+}

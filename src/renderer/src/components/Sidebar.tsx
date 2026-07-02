@@ -9,6 +9,7 @@ interface Props {
   onSelect: (id: string) => void
   onAdd: () => void
   onRename: (id: string, name: string) => void
+  onRemove: (id: string) => void
   onOpenSettings: () => void
 }
 
@@ -19,6 +20,7 @@ export const Sidebar: React.FC<Props> = ({
   onSelect,
   onAdd,
   onRename,
+  onRemove,
   onOpenSettings
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -92,6 +94,16 @@ export const Sidebar: React.FC<Props> = ({
               }}
             >
               ✎
+            </button>
+            <button
+              className="rename remove"
+              title="Remove workspace"
+              onClick={(e) => {
+                e.stopPropagation()
+                onRemove(ws.id)
+              }}
+            >
+              ✕
             </button>
           </div>
         ))}

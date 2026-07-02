@@ -1,0 +1,27 @@
+appId: com.workspaces.app
+productName: WorkSpaces
+directories:
+  buildResources: build
+  output: dist
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!scripts/*'
+  - '!.serena/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!electron-builder.yml'
+  - '!{.gitignore,PLAN.md,STATUS.md,mockup.html,tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.*.tsbuildinfo}'
+# node-pty is already rebuilt against Electron's ABI by scripts/rebuild-pty.mjs
+# (postinstall). electron-builder's own rebuild would undo those patches.
+npmRebuild: false
+asarUnpack:
+  - node_modules/node-pty/**
+win:
+  target:
+    - nsis
+  executableName: WorkSpaces
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  shortcutName: WorkSpaces

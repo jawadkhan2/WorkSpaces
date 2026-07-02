@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -9,10 +9,13 @@ interface Props {
   term: RuntimeTerminal
   cwd: string
   focused: boolean
+  hidden?: boolean
   started: React.MutableRefObject<Set<string>>
   onFocus: () => void
   onClose: () => void
   onToggleAdmin: () => void
+  onRename: (title: string) => void
+  onSpawnError: (msg: string) => void
   onExpand: () => void
 }
 
@@ -36,16 +39,28 @@ export const TerminalTile: React.FC<Props> = ({
   term,
   cwd,
   focused,
+  hidden,
   started,
   onFocus,
   onClose,
   onToggleAdmin,
+  onRename,
+  onSpawnError,
   onExpand
 }) => {
   const bodyRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [draftTitle, setDraftTitle] = useState(term.title)
   const preset = AGENT_PRESETS.find((p) => p.kind === term.kind) || AGENT_PRESETS[1]
+
+  const commitTitle = (): void => {
+    setEditing(false)
+    const title = draftTitle.trim()
+    if (title && title !== term.title) onRename(title)
+    else setDraftTitle(term.title)
+  }
 
   // Mount xterm + spawn PTY once per terminal id.
   useEffect(() => {
@@ -95,6 +110,15 @@ export const TerminalTile: React.FC<Props> = ({
           fit.fit()
           window.api.resizePty(term.id, xterm.cols, xterm.rows)
         })
+        .catch((err: Error) => {
+          // e.g. UAC declined, broker timeout, bad shell.
+          const msg = String(err.message || err).replace(
+            /^Error invoking remote method 'pty:create': (Error: )?/,
+            ''
+          )
+          xterm.writeln(`\x1b[31m[terminal failed to start: ${msg}]\x1b[0m`)
+          onSpawnError(msg)
+        })
     }
 
     const ro = new ResizeObserver(() => {
@@ -134,6 +158,7 @@ export const TerminalTile: React.FC<Props> = ({
   return (
     <div
       className={`term${focused ? ' focused' : ''}${term.admin ? ' admin' : ''}`}
+      style={hidden ? { display: 'none' } : undefined}
       onMouseDown={onFocus}
     >
       <div className="term-head">
@@ -141,7 +166,34 @@ export const TerminalTile: React.FC<Props> = ({
           <span className="glyph" style={{ background: preset.color }}>
             {preset.glyph}
           </span>
-          {term.title}
+          {editing ? (
+            <input
+              className="title-edit"
+              value={draftTitle}
+              autoFocus
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitTitle()
+                if (e.key === 'Escape') {
+                  setDraftTitle(term.title)
+                  setEditing(false)
+                }
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span
+              className="title"
+              title="Double-click to rename"
+              onDoubleClick={() => {
+                setDraftTitle(term.title)
+                setEditing(true)
+              }}
+            >
+              {term.title}
+            </span>
+          )}
         </span>
         {term.admin ? (
           <span className="admin-badge">🛡 Admin</span>

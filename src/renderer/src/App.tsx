@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AGENT_PRESETS,
   AgentPreset,
   DEFAULT_SETTINGS,
   LayoutMode,
@@ -27,10 +28,17 @@ export default function App(): React.JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
   const [arrangeOpen, setArrangeOpen] = useState(false)
   const [newMenuOpen, setNewMenuOpen] = useState(false)
+  const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([])
 
   const started = useRef<Set<string>>(new Set())
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+
+  const pushToast = (msg: string): void => {
+    const id = uuid()
+    setToasts((prev) => [...prev, { id, msg }])
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 6000)
+  }
 
   const seedShell = (wsId: string): RuntimeTerminal => ({
     id: uuid(),
@@ -99,6 +107,37 @@ export default function App(): React.JSX.Element {
     setWorkspaces((prev) => prev.map((w) => (w.id === id ? { ...w, name } : w)))
   }
 
+  const removeWorkspace = (id: string): void => {
+    const ws = workspaces.find((w) => w.id === id)
+    if (!ws) return
+    const live = terminals[id]?.length || 0
+    const ok = window.confirm(
+      `Remove workspace "${ws.name}"?` +
+        (live ? '\nIts terminals will be stopped.' : '') +
+        '\nThe folder on disk is not touched.'
+    )
+    if (!ok) return
+    for (const t of terminals[id] || []) {
+      window.api.killPty(t.id)
+      started.current.delete(t.id)
+    }
+    window.api.removeWorkspace(id)
+    setTerminals((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    setFocused((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    setWorkspaces((prev) => prev.filter((w) => w.id !== id))
+    if (activeId === id) {
+      setActiveId(workspaces.find((w) => w.id !== id)?.id ?? null)
+    }
+  }
+
   const setLayout = (layout: LayoutMode): void => {
     if (!active) return
     window.api.setLayout(active.id, layout)
@@ -134,24 +173,46 @@ export default function App(): React.JSX.Element {
     })
   }
 
+  // Real elevation can't be applied to a running process — the terminal is
+  // restarted through the UAC broker (or back to a normal shell).
   const toggleAdmin = (id: string): void => {
+    if (!active) return
+    const t = (terminals[active.id] || []).find((x) => x.id === id)
+    if (!t) return
+    const msg = t.admin
+      ? 'Restart this terminal without administrator rights?\nThe current session will be replaced.'
+      : 'Restart this terminal as Administrator?\nWindows will show a UAC prompt, and the current session will be replaced.'
+    if (!window.confirm(msg)) return
+    window.api.killPty(id)
+    started.current.delete(id)
+    const fresh: RuntimeTerminal = { ...t, id: uuid(), admin: !t.admin, status: 'idle' }
+    setTerminals((prev) => ({
+      ...prev,
+      [active.id]: (prev[active.id] || []).map((x) => (x.id === id ? fresh : x))
+    }))
+    setFocused((prev) => ({ ...prev, [active.id]: fresh.id }))
+  }
+
+  const renameTerminal = (id: string, title: string): void => {
     setTerminals((prev) => {
       const next: Record<string, RuntimeTerminal[]> = {}
       for (const [wsId, list] of Object.entries(prev)) {
-        next[wsId] = list.map((t) => {
-          if (t.id !== id) return t
-          if (!t.admin) {
-            const ok = window.confirm(
-              'Run this terminal as Administrator?\nThe agent will have full access to your system.'
-            )
-            if (!ok) return t
-          }
-          return { ...t, admin: !t.admin }
-        })
+        next[wsId] = list.map((t) => (t.id === id ? { ...t, title } : t))
       }
       return next
     })
-    // NOTE: true OS elevation (UAC broker) is Phase 4 — this toggles the marker only.
+  }
+
+  // A terminal whose PTY failed to start (e.g. UAC declined): mark stopped + toast.
+  const onSpawnError = (id: string, msg: string): void => {
+    pushToast(msg)
+    setTerminals((prev) => {
+      const next: Record<string, RuntimeTerminal[]> = {}
+      for (const [wsId, list] of Object.entries(prev)) {
+        next[wsId] = list.map((t) => (t.id === id ? { ...t, status: 'exited' } : t))
+      }
+      return next
+    })
   }
 
   const setFocusedId = (id: string): void => {
@@ -162,6 +223,27 @@ export default function App(): React.JSX.Element {
   const changeSettings = (partial: Partial<Settings>): void => {
     window.api.setSettings(partial).then(setSettingsState)
   }
+
+  // Keyboard shortcuts: Ctrl+Shift+T new shell, Ctrl+Shift+W close focused, Ctrl+, settings.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') {
+        e.preventDefault()
+        const shell = AGENT_PRESETS.find((p) => p.kind === 'shell')
+        if (shell) addTerminal(shell)
+      } else if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') {
+        e.preventDefault()
+        if (!active) return
+        const focusedTerm = focused[active.id] ?? terminals[active.id]?.[0]?.id
+        if (focusedTerm) closeTerminal(focusedTerm)
+      } else if (e.ctrlKey && !e.shiftKey && e.key === ',') {
+        e.preventDefault()
+        setShowSettings(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   return (
     <div className="app" onClick={() => { setArrangeOpen(false); setNewMenuOpen(false) }}>
@@ -179,6 +261,7 @@ export default function App(): React.JSX.Element {
           onSelect={setActiveId}
           onAdd={addWorkspace}
           onRename={renameWorkspace}
+          onRemove={removeWorkspace}
           onOpenSettings={() => setShowSettings(true)}
         />
 
@@ -245,6 +328,8 @@ export default function App(): React.JSX.Element {
                     onFocus={setFocusedId}
                     onClose={closeTerminal}
                     onToggleAdmin={toggleAdmin}
+                    onRename={renameTerminal}
+                    onSpawnError={onSpawnError}
                     onExpand={(id) => {
                       setFocusedId(id)
                       setLayout(active.layout === 'single' ? 'auto' : 'single')
@@ -263,6 +348,16 @@ export default function App(): React.JSX.Element {
           onChange={changeSettings}
           onClose={() => setShowSettings(false)}
         />
+      )}
+
+      {toasts.length > 0 && (
+        <div className="toasts">
+          {toasts.map((t) => (
+            <div key={t.id} className="toast">
+              {t.msg}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )

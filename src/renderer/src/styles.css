@@ -82,6 +82,7 @@ body {
   transition: opacity 0.12s; background: none; border: none;
 }
 .ws .rename:hover { color: var(--text); }
+.ws .remove:hover { color: var(--red); }
 .ws .live {
   width: 8px; height: 8px; border-radius: 50%; background: var(--green);
   box-shadow: 0 0 6px var(--green); flex-shrink: 0;
@@ -175,7 +176,13 @@ body {
   height: 38px; background: var(--panel); display: flex; align-items: center; padding: 0 14px;
   gap: 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-.term-head .agent { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.term-head .agent { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 7px; min-width: 0; }
+.term-head .agent .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-head .title-edit {
+  background: var(--bg); border: 1px solid var(--accent); border-radius: 5px;
+  color: var(--text); font-size: 12px; font-weight: 600; padding: 2px 6px; width: 140px;
+  outline: none; font-family: inherit;
+}
 .term-head .agent .glyph {
   width: 20px; height: 20px; border-radius: 6px; display: flex; align-items: center;
   justify-content: center; font-size: 11px; font-weight: 700; color: #fff;
@@ -256,6 +263,22 @@ body {
 }
 .modal-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .modal-actions button.danger { background: var(--red); border-color: var(--red); color: #fff; }
+
+/* ---------- Toasts ---------- */
+.toasts {
+  position: fixed; right: 18px; bottom: 18px; z-index: 200;
+  display: flex; flex-direction: column; gap: 8px; max-width: 380px;
+}
+.toast {
+  background: var(--panel); border: 1px solid var(--red); border-radius: 10px;
+  color: var(--text); font-size: 13px; padding: 11px 14px; line-height: 1.45;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
