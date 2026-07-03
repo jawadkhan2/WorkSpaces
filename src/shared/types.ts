@@ -6,6 +6,9 @@ export type TerminalKind = 'claude' | 'shell' | 'custom'
 
 export type TerminalStatus = 'running' | 'waiting' | 'idle' | 'exited'
 
+/** App detected running inside a shell PTY (process tree / OSC title). */
+export type DetectedApp = 'claude' | null
+
 export interface TerminalSpec {
   id: string
   workspaceId: string

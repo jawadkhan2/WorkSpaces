@@ -1,5 +1,5 @@
 import React from 'react'
-import { LayoutMode } from '../../../shared/types'
+import { AGENT_PRESETS, AgentPreset, LayoutMode } from '../../../shared/types'
 import { RuntimeTerminal } from '../types'
 import { gridStyle } from '../lib/layout'
 import { TerminalTile } from './TerminalTile'
@@ -11,7 +11,7 @@ interface Props {
   terminals: RuntimeTerminal[]
   focusedId: string | null
   started: React.MutableRefObject<Set<string>>
-  onAddClick: () => void
+  onAdd: (preset: AgentPreset) => void
   onFocus: (id: string) => void
   onClose: (id: string) => void
   onToggleAdmin: (id: string) => void
@@ -27,7 +27,7 @@ export const TerminalGrid: React.FC<Props> = ({
   terminals,
   focusedId,
   started,
-  onAddClick,
+  onAdd,
   onFocus,
   onClose,
   onToggleAdmin,
@@ -38,7 +38,9 @@ export const TerminalGrid: React.FC<Props> = ({
   // In "single" layout only the focused (or first) terminal shows, but every
   // tile stays mounted (hidden via CSS) so xterm scrollback survives.
   const single = layout === 'single'
-  const showAddTile = !single
+  // Terminals fill the whole grid; the add tile only appears when the
+  // workspace has no terminals at all (otherwise the ws-bar button is used).
+  const showAddTile = terminals.length === 0
   const tileCount = terminals.length + (showAddTile ? 1 : 0)
   const style = gridStyle(layout, Math.max(1, tileCount))
   const shownId = focusedId ?? terminals[0]?.id ?? null
@@ -65,9 +67,19 @@ export const TerminalGrid: React.FC<Props> = ({
         />
       ))}
       {showAddTile && (
-        <div className="term add" onClick={onAddClick}>
+        <div className="term add">
           <div className="plus">+</div>
-          <div className="lbl">New terminal</div>
+          <div className="lbl">No terminals yet — start one:</div>
+          <div className="add-actions">
+            {AGENT_PRESETS.map((p) => (
+              <button key={p.kind} onClick={() => onAdd(p)}>
+                <span className="glyph" style={{ background: p.color }}>
+                  {p.glyph}
+                </span>
+                {p.title}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>

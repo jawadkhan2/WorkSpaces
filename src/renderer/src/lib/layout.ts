@@ -7,7 +7,8 @@ export interface GridStyle {
 
 /**
  * Compute CSS grid template for a given layout + tile count.
- * `count` includes the trailing "New terminal" tile.
+ * `count` is the number of visible tiles (terminals, or the lone add tile
+ * when the workspace is empty) so open terminals always fill the area.
  * Auto = balanced near-square grid: cols = ceil(sqrt(n)), rows = ceil(n/cols).
  */
 export function gridStyle(layout: LayoutMode, count: number): GridStyle {

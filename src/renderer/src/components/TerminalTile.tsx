@@ -55,6 +55,13 @@ export const TerminalTile: React.FC<Props> = ({
   const [draftTitle, setDraftTitle] = useState(term.title)
   const preset = AGENT_PRESETS.find((p) => p.kind === term.kind) || AGENT_PRESETS[1]
 
+  // A shell running Claude Code temporarily presents as Claude Code; the
+  // tile reverts to its own title/glyph the moment the process exits.
+  const claudeLive = term.app === 'claude' && term.kind !== 'claude'
+  const claudePreset = AGENT_PRESETS.find((p) => p.kind === 'claude') || preset
+  const displayPreset = claudeLive ? claudePreset : preset
+  const displayTitle = claudeLive ? 'Claude Code' : term.title
+
   const commitTitle = (): void => {
     setEditing(false)
     const title = draftTitle.trim()
@@ -84,6 +91,51 @@ export const TerminalTile: React.FC<Props> = ({
     fit.fit()
     xtermRef.current = xterm
     fitRef.current = fit
+
+    // Clipboard: Ctrl+C copies when text is selected (otherwise stays SIGINT),
+    // Ctrl+V / Ctrl+Shift+V paste, Ctrl+Shift+C always copies.
+    const copySelection = (): void => {
+      const sel = xterm.getSelection()
+      if (sel) navigator.clipboard.writeText(sel)
+    }
+    const paste = (): void => {
+      navigator.clipboard.readText().then((text) => {
+        if (text) xterm.paste(text)
+      })
+    }
+    // Match on e.key as well as e.code: synthetic input (e.g. VoicePill via
+    // SendInput/VK_PACKET) arrives with an empty e.code, and its keypress leg
+    // carries the raw control char — both must be swallowed or the PTY gets ^V.
+    xterm.attachCustomKeyEventHandler((e) => {
+      const k = e.key === '\u0016' ? 'v' : e.key === '\u0003' ? 'c' : e.key.toLowerCase()
+      const ctrl = e.ctrlKey || e.key === '\u0016' || e.key === '\u0003'
+      if (ctrl && (k === 'v' || e.code === 'KeyV')) {
+        // Swallow so xterm doesn't write \x16 to the PTY, but don't paste
+        // manually: skipping xterm's preventDefault lets the browser's native
+        // paste event fire, which xterm's own onPaste handler already handles.
+        return false
+      }
+      if (ctrl && (k === 'c' || e.code === 'KeyC') && (e.shiftKey || xterm.hasSelection())) {
+        if (e.type === 'keydown') {
+          copySelection()
+          if (!e.shiftKey) xterm.clearSelection()
+        }
+        return false
+      }
+      return true
+    })
+
+    // Right-click: copy selection if any, else paste (Windows Terminal style).
+    const onContextMenu = (e: MouseEvent): void => {
+      e.preventDefault()
+      if (xterm.hasSelection()) {
+        copySelection()
+        xterm.clearSelection()
+      } else {
+        paste()
+      }
+    }
+    bodyRef.current.addEventListener('contextmenu', onContextMenu)
 
     const disposeData = window.api.onPtyData(term.id, (data) => xterm.write(data))
     const disposeExit = window.api.onPtyExit(term.id, () => {
@@ -130,8 +182,10 @@ export const TerminalTile: React.FC<Props> = ({
       }
     })
     ro.observe(bodyRef.current)
+    const bodyEl = bodyRef.current
 
     return () => {
+      bodyEl.removeEventListener('contextmenu', onContextMenu)
       ro.disconnect()
       disposeData()
       disposeExit()
@@ -157,14 +211,20 @@ export const TerminalTile: React.FC<Props> = ({
 
   return (
     <div
-      className={`term${focused ? ' focused' : ''}${term.admin ? ' admin' : ''}`}
+      className={`term${focused ? ' focused' : ''}${term.admin ? ' admin' : ''}${
+        claudeLive ? ' claude-live' : ''
+      }${term.closing ? ' closing' : ''}`}
       style={hidden ? { display: 'none' } : undefined}
       onMouseDown={onFocus}
     >
       <div className="term-head">
         <span className="agent">
-          <span className="glyph" style={{ background: preset.color }}>
-            {preset.glyph}
+          <span
+            key={displayPreset.kind}
+            className="glyph"
+            style={{ background: displayPreset.color }}
+          >
+            {displayPreset.glyph}
           </span>
           {editing ? (
             <input
@@ -191,7 +251,7 @@ export const TerminalTile: React.FC<Props> = ({
                 setEditing(true)
               }}
             >
-              {term.title}
+              {displayTitle}
             </span>
           )}
         </span>

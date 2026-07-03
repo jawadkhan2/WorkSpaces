@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { LayoutMode, Settings, TerminalSpec, TerminalStatus, Workspace } from '../shared/types'
+import {
+  DetectedApp,
+  LayoutMode,
+  Settings,
+  TerminalSpec,
+  TerminalStatus,
+  Workspace
+} from '../shared/types'
 
 const api = {
   // Workspaces
@@ -45,6 +52,11 @@ const api = {
     const listener = (_e: unknown, p: { id: string; status: TerminalStatus }): void => cb(p)
     ipcRenderer.on('pty:status', listener)
     return () => ipcRenderer.removeListener('pty:status', listener)
+  },
+  onApp: (cb: (p: { id: string; app: DetectedApp }) => void): (() => void) => {
+    const listener = (_e: unknown, p: { id: string; app: DetectedApp }): void => cb(p)
+    ipcRenderer.on('pty:app', listener)
+    return () => ipcRenderer.removeListener('pty:app', listener)
   }
 }
 

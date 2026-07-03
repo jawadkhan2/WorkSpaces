@@ -28,6 +28,9 @@ export default function App(): React.JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
   const [arrangeOpen, setArrangeOpen] = useState(false)
   const [newMenuOpen, setNewMenuOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem('sidebarCollapsed') === '1'
+  )
   const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([])
 
   const started = useRef<Set<string>>(new Set())
@@ -73,7 +76,22 @@ export default function App(): React.JSX.Element {
       setTerminals((prev) => {
         const next: Record<string, RuntimeTerminal[]> = {}
         for (const [wsId, list] of Object.entries(prev)) {
-          next[wsId] = list.map((t) => (t.id === id ? { ...t, status } : t))
+          next[wsId] = list.map((t) =>
+            t.id === id ? { ...t, status, app: status === 'exited' ? null : t.app } : t
+          )
+        }
+        return next
+      })
+    })
+  }, [])
+
+  // Detected-app stream (e.g. Claude Code running inside a shell).
+  useEffect(() => {
+    return window.api.onApp(({ id, app }) => {
+      setTerminals((prev) => {
+        const next: Record<string, RuntimeTerminal[]> = {}
+        for (const [wsId, list] of Object.entries(prev)) {
+          next[wsId] = list.map((t) => (t.id === id ? { ...t, app } : t))
         }
         return next
       })
@@ -161,16 +179,38 @@ export default function App(): React.JSX.Element {
     setNewMenuOpen(false)
   }
 
+  // Two-phase close: mark the tile as closing so it can play its exit
+  // animation, then actually unmount it.
   const closeTerminal = (id: string): void => {
     window.api.killPty(id)
     started.current.delete(id)
     setTerminals((prev) => {
       const next: Record<string, RuntimeTerminal[]> = {}
       for (const [wsId, list] of Object.entries(prev)) {
-        next[wsId] = list.filter((t) => t.id !== id)
+        next[wsId] = list.map((t) => (t.id === id ? { ...t, closing: true } : t))
       }
       return next
     })
+    // Move focus off the closing tile immediately.
+    setFocused((prev) => {
+      const next = { ...prev }
+      for (const [wsId, focusedId] of Object.entries(prev)) {
+        if (focusedId === id) {
+          next[wsId] =
+            (terminals[wsId] || []).find((t) => t.id !== id && !t.closing)?.id ?? null
+        }
+      }
+      return next
+    })
+    setTimeout(() => {
+      setTerminals((prev) => {
+        const next: Record<string, RuntimeTerminal[]> = {}
+        for (const [wsId, list] of Object.entries(prev)) {
+          next[wsId] = list.filter((t) => t.id !== id)
+        }
+        return next
+      })
+    }, 200)
   }
 
   // Real elevation can't be applied to a running process — the terminal is
@@ -185,7 +225,7 @@ export default function App(): React.JSX.Element {
     if (!window.confirm(msg)) return
     window.api.killPty(id)
     started.current.delete(id)
-    const fresh: RuntimeTerminal = { ...t, id: uuid(), admin: !t.admin, status: 'idle' }
+    const fresh: RuntimeTerminal = { ...t, id: uuid(), admin: !t.admin, status: 'idle', app: null }
     setTerminals((prev) => ({
       ...prev,
       [active.id]: (prev[active.id] || []).map((x) => (x.id === id ? fresh : x))
@@ -224,6 +264,13 @@ export default function App(): React.JSX.Element {
     window.api.setSettings(partial).then(setSettingsState)
   }
 
+  const toggleSidebar = (): void => {
+    setSidebarCollapsed((v) => {
+      localStorage.setItem('sidebarCollapsed', v ? '0' : '1')
+      return !v
+    })
+  }
+
   // Keyboard shortcuts: Ctrl+Shift+T new shell, Ctrl+Shift+W close focused, Ctrl+, settings.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -258,6 +305,8 @@ export default function App(): React.JSX.Element {
           workspaces={workspaces}
           activeId={activeId}
           liveIds={liveIds}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={toggleSidebar}
           onSelect={setActiveId}
           onAdd={addWorkspace}
           onRename={renameWorkspace}
@@ -322,9 +371,7 @@ export default function App(): React.JSX.Element {
                     terminals={terminals[ws.id] || []}
                     focusedId={focused[ws.id] ?? (terminals[ws.id]?.[0]?.id || null)}
                     started={started}
-                    onAddClick={() => {
-                      setNewMenuOpen(true)
-                    }}
+                    onAdd={addTerminal}
                     onFocus={setFocusedId}
                     onClose={closeTerminal}
                     onToggleAdmin={toggleAdmin}
