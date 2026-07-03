@@ -25,3 +25,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   shortcutName: WorkSpaces
+publish:
+  provider: github
+  owner: jawadkhan2
+  repo: WorkSpaces

@@ -4,6 +4,7 @@ import { getStore } from './store'
 import { PtyManager } from './pty-manager'
 import { registerIpc } from './ipc'
 import { runBroker } from './broker'
+import { initUpdater } from './updater'
 
 // Elevated PTY broker mode (PLAN.md §6): a second, UAC-elevated instance of
 // this app launched with --pty-broker. It hosts one terminal's node-pty and
@@ -81,6 +82,7 @@ if (IS_BROKER) {
     ptyManager = new PtyManager(() => mainWindow)
     registerIpc(ptyManager, () => mainWindow)
     createWindow()
+    initUpdater(() => mainWindow)
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
