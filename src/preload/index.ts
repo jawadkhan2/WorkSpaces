@@ -5,6 +5,7 @@ import {
   Settings,
   TerminalSpec,
   TerminalStatus,
+  UpdateState,
   Workspace
 } from '../shared/types'
 
@@ -27,6 +28,17 @@ const api = {
 
   // Dialog
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickFolder'),
+
+  // Updates
+  getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
+  getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('updater:getState'),
+  checkForUpdates: (): Promise<void> => ipcRenderer.invoke('updater:check'),
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('updater:install'),
+  onUpdateState: (cb: (state: UpdateState) => void): (() => void) => {
+    const listener = (_e: unknown, state: UpdateState): void => cb(state)
+    ipcRenderer.on('updater:state', listener)
+    return () => ipcRenderer.removeListener('updater:state', listener)
+  },
 
   // PTY
   createPty: (spec: TerminalSpec, cwd: string): Promise<{ id: string; pid: number }> =>

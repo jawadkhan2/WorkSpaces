@@ -5,6 +5,7 @@ import {
   DEFAULT_SETTINGS,
   LayoutMode,
   Settings,
+  UpdateState,
   Workspace
 } from '../../shared/types'
 import { RuntimeTerminal } from './types'
@@ -32,6 +33,8 @@ export default function App(): React.JSX.Element {
     () => localStorage.getItem('sidebarCollapsed') === '1'
   )
   const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([])
+  const [appVersion, setAppVersion] = useState('')
+  const [updateState, setUpdateState] = useState<UpdateState>({ phase: 'idle' })
 
   const started = useRef<Set<string>>(new Set())
   const settingsRef = useRef(settings)
@@ -68,6 +71,13 @@ export default function App(): React.JSX.Element {
         }
       }
     )
+  }, [])
+
+  // Update state: initial snapshot + live stream from main.
+  useEffect(() => {
+    window.api.getVersion().then(setAppVersion)
+    window.api.getUpdateState().then(setUpdateState)
+    return window.api.onUpdateState(setUpdateState)
   }, [])
 
   // Status stream.
@@ -298,6 +308,15 @@ export default function App(): React.JSX.Element {
         <div className="app-name">
           Work<span>Spaces</span>
         </div>
+        {updateState.phase === 'downloaded' && (
+          <button
+            className="update-pill"
+            title={`WorkSpaces ${updateState.version} downloaded — restart to apply`}
+            onClick={() => window.api.installUpdate()}
+          >
+            ↻ Restart to update
+          </button>
+        )}
       </div>
 
       <div className="layout">
@@ -392,6 +411,10 @@ export default function App(): React.JSX.Element {
       {showSettings && (
         <SettingsModal
           settings={settings}
+          appVersion={appVersion}
+          updateState={updateState}
+          onCheckForUpdates={() => window.api.checkForUpdates()}
+          onInstallUpdate={() => window.api.installUpdate()}
           onChange={changeSettings}
           onClose={() => setShowSettings(false)}
         />

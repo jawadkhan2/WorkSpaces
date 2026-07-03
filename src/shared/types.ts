@@ -30,6 +30,23 @@ export interface Settings {
   confirmOnExit: boolean
 }
 
+/** OTA update lifecycle, pushed from main via `updater:state`. */
+export type UpdatePhase =
+  | 'idle' // packaged, no check finished yet
+  | 'checking'
+  | 'downloading'
+  | 'downloaded' // ready — restart to apply
+  | 'up-to-date'
+  | 'error'
+  | 'unsupported' // dev build, updater inactive
+
+export interface UpdateState {
+  phase: UpdatePhase
+  version?: string
+  percent?: number
+  error?: string
+}
+
 export interface AgentPreset {
   kind: TerminalKind
   title: string
