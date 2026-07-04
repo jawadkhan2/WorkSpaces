@@ -18,6 +18,14 @@ interface Props {
   onRename: (id: string, title: string) => void
   onSpawnError: (id: string, msg: string) => void
   onExpand: (id: string) => void
+  onShowAll: () => void
+}
+
+const DOT_LABEL: Record<string, string> = {
+  running: 'running',
+  waiting: 'needs you',
+  idle: 'idle',
+  exited: 'stopped'
 }
 
 export const TerminalGrid: React.FC<Props> = ({
@@ -33,7 +41,8 @@ export const TerminalGrid: React.FC<Props> = ({
   onToggleAdmin,
   onRename,
   onSpawnError,
-  onExpand
+  onExpand,
+  onShowAll
 }) => {
   // In "single" layout only the focused (or first) terminal shows, but every
   // tile stays mounted (hidden via CSS) so xterm scrollback survives.
@@ -44,6 +53,9 @@ export const TerminalGrid: React.FC<Props> = ({
   const tileCount = terminals.length + (showAddTile ? 1 : 0)
   const style = gridStyle(layout, Math.max(1, tileCount))
   const shownId = focusedId ?? terminals[0]?.id ?? null
+  // Terminals hidden behind the maximized one (single layout) — surfaced via
+  // a subtle pill so the user never forgets agents are still working.
+  const background = single ? terminals.filter((t) => t.id !== shownId && !t.closing) : []
 
   return (
     <div
@@ -56,6 +68,7 @@ export const TerminalGrid: React.FC<Props> = ({
           term={t}
           cwd={cwd}
           focused={t.id === focusedId}
+          visible={visible}
           hidden={single && t.id !== shownId}
           started={started}
           onFocus={() => onFocus(t.id)}
@@ -66,6 +79,21 @@ export const TerminalGrid: React.FC<Props> = ({
           onExpand={() => onExpand(t.id)}
         />
       ))}
+      {background.length > 0 && (
+        <div className="bg-hint" title="Terminals running in the background">
+          {background.map((t) => (
+            <button
+              key={t.id}
+              className={`bg-dot ${t.status}`}
+              title={`${t.title} — ${DOT_LABEL[t.status] ?? t.status} (click to view)`}
+              onClick={() => onFocus(t.id)}
+            />
+          ))}
+          <button className="bg-label" onClick={onShowAll}>
+            {background.length} in background
+          </button>
+        </div>
+      )}
       {showAddTile && (
         <div className="term add">
           <div className="plus">+</div>

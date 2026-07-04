@@ -20,6 +20,16 @@ interface ManagedPty {
   status: TerminalStatus
   app: DetectedApp
   lastData: number
+  // Timestamps of UI-echo triggers (resize, focus/mouse escape input). Output
+  // arriving shortly after these is a repaint, not real work — it must not
+  // flip the status pill to "running".
+  lastResize: number
+  lastMetaInput: number
+  // Whether the PTY's shell currently has a live descendant process (a
+  // command like `npm run dev` is running inside it). Updated by the same
+  // process-tree poll as app detection. While busy, silence between output
+  // bursts must not demote the status to "idle".
+  busy: boolean
   waitTimer?: NodeJS.Timeout
 }
 
@@ -74,15 +84,34 @@ function listProcesses(): Promise<ProcInfo[]> {
   })
 }
 
+// Input that is pure terminal chatter — focus in/out reports (CSI I / CSI O)
+// and SGR mouse events — as opposed to actual keystrokes. Apps like Claude
+// Code repaint in response to these; that repaint is not "running".
+const META_INPUT = /^(?:\x1b\[(?:I|O|<\d+;\d+;\d+[Mm]))+$/
+
+// Output arriving within this window after a resize or meta input is treated
+// as a repaint and does not promote the status to "running".
+const REPAINT_SUPPRESS_MS = 500
+
 // Prompt patterns that suggest an agent is waiting for the user.
 const WAIT_PATTERNS = [
   /\[y\/n\]/i,
   /\(y\/n\)/i,
   /do you want/i,
   /press enter/i,
-  /continue\?/i,
-  /❯\s*$/
+  /continue\?/i
 ]
+
+// A bare `❯` is also the prompt of common shells (Starship, oh-my-posh), so
+// it only counts as "waiting" when a known app is detected in the terminal.
+const APP_WAIT_PATTERNS = [/❯\s*$/]
+
+// After output goes quiet for this long, a terminal with no live child
+// process is considered idle again.
+const OUTPUT_IDLE_MS = 1500
+
+// Descendants that exist as console plumbing, not user work.
+const PLUMBING_PROCS = /^(conhost\.exe|openconsole\.exe|winpty-agent\.exe)$/i
 
 /** Owns every live PTY (local + elevated). Streams data to the renderer and tracks status. */
 export class PtyManager {
@@ -102,7 +131,12 @@ export class PtyManager {
       backend,
       status: 'idle',
       app: null,
-      lastData: Date.now()
+      lastData: Date.now(),
+      // Startup banner/prompt output is a paint, not work — suppress the
+      // initial "running" flash the same way as resize repaints.
+      lastResize: Date.now(),
+      lastMetaInput: 0,
+      busy: false
     }
     this.ptys.set(spec.id, managed)
     this.ensureAppPolling()
@@ -144,8 +178,15 @@ export class PtyManager {
   private onData(id: string, data: string): void {
     const managed = this.ptys.get(id)
     if (!managed) return
-    managed.lastData = Date.now()
-    this.setStatus(managed, 'running')
+    const now = Date.now()
+    managed.lastData = now
+    // Repaints caused by resizes or focus/mouse chatter must not flash the
+    // status to "running" (workspace switches, tile focus, hover, etc.).
+    const sinceRepaintTrigger =
+      now - Math.max(managed.lastResize, managed.lastMetaInput)
+    if (sinceRepaintTrigger > REPAINT_SUPPRESS_MS) {
+      this.setStatus(managed, 'running')
+    }
     this.getWindow()?.webContents.send(`pty:data:${id}`, data)
 
     // Fast path for app detection: programs that set the terminal title via
@@ -158,10 +199,18 @@ export class PtyManager {
     // Detect an "awaiting input" prompt shortly after output settles.
     if (managed.waitTimer) clearTimeout(managed.waitTimer)
     const tail = data.slice(-200)
-    if (WAIT_PATTERNS.some((re) => re.test(tail))) {
+    const waiting =
+      WAIT_PATTERNS.some((re) => re.test(tail)) ||
+      (managed.app !== null && APP_WAIT_PATTERNS.some((re) => re.test(tail)))
+    if (waiting) {
       managed.waitTimer = setTimeout(() => this.setStatus(managed, 'waiting'), 400)
     } else {
-      managed.waitTimer = setTimeout(() => this.setStatus(managed, 'idle'), 1500)
+      // Programs like dev servers emit output in bursts with long silences in
+      // between — only demote to idle when nothing is running inside the
+      // shell anymore (the process poll demotes later otherwise).
+      managed.waitTimer = setTimeout(() => {
+        if (!managed.busy) this.setStatus(managed, 'idle')
+      }, OUTPUT_IDLE_MS)
     }
   }
 
@@ -213,17 +262,35 @@ export class PtyManager {
           if (list) list.push(p)
           else children.set(p.ppid, [p])
         }
-        const detect = (rootPid: number): DetectedApp => {
+        const detect = (rootPid: number): { app: DetectedApp; busy: boolean } => {
           const queue = [...(children.get(rootPid) ?? [])]
+          let app: DetectedApp = null
+          let busy = false
           let guard = 0
           while (queue.length && guard++ < 256) {
             const p = queue.shift()!
-            if (/^claude/i.test(p.name) || /claude/i.test(p.cmd)) return 'claude'
+            if (!PLUMBING_PROCS.test(p.name)) busy = true
+            if (/^claude/i.test(p.name) || /claude/i.test(p.cmd)) {
+              app = 'claude'
+              break
+            }
             queue.push(...(children.get(p.pid) ?? []))
           }
-          return null
+          return { app, busy }
         }
-        for (const m of this.ptys.values()) this.setApp(m, detect(m.backend.pid))
+        for (const m of this.ptys.values()) {
+          const { app, busy } = detect(m.backend.pid)
+          this.setApp(m, app)
+          m.busy = busy
+          // Keep the status honest between output bursts: a busy shell stays
+          // "running" even while silent; a shell whose child just exited
+          // drops back to idle once its output has settled.
+          if (busy && m.status === 'idle') {
+            this.setStatus(m, 'running')
+          } else if (!busy && m.status === 'running' && Date.now() - m.lastData > OUTPUT_IDLE_MS) {
+            this.setStatus(m, 'idle')
+          }
+        }
       })
       .catch(() => {
         /* process listing unavailable — keep last known state */
@@ -234,12 +301,18 @@ export class PtyManager {
   }
 
   input(id: string, data: string): void {
-    this.ptys.get(id)?.backend.write(data)
+    const m = this.ptys.get(id)
+    if (!m) return
+    if (META_INPUT.test(data)) m.lastMetaInput = Date.now()
+    m.backend.write(data)
   }
 
   resize(id: string, cols: number, rows: number): void {
+    const m = this.ptys.get(id)
+    if (!m) return
+    m.lastResize = Date.now()
     try {
-      this.ptys.get(id)?.backend.resize(cols, rows)
+      m.backend.resize(cols, rows)
     } catch {
       /* ignore resize race during teardown */
     }

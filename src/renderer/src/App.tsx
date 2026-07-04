@@ -80,6 +80,15 @@ export default function App(): React.JSX.Element {
     return window.api.onUpdateState(setUpdateState)
   }, [])
 
+  // Someone tried to launch a second WorkSpaces — main blocked it and
+  // focused this window; let the user know why the new one didn't appear.
+  useEffect(() => {
+    return window.api.onSecondInstance(() =>
+      pushToast('WorkSpaces is already running — the second launch was blocked.')
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Status stream.
   useEffect(() => {
     return window.api.onStatus(({ id, status }) => {
@@ -400,6 +409,7 @@ export default function App(): React.JSX.Element {
                       setFocusedId(id)
                       setLayout(active.layout === 'single' ? 'auto' : 'single')
                     }}
+                    onShowAll={() => setLayout('auto')}
                   />
                 ))}
               </div>

@@ -29,6 +29,14 @@ const api = {
   // Dialog
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickFolder'),
 
+  // Clipboard (main-process — reliable regardless of window focus)
+  clipboardRead: (): Promise<string> => ipcRenderer.invoke('clipboard:read'),
+  clipboardWrite: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write', text),
+
+  // Ctrl+click links: web URLs or file paths (resolved against cwd)
+  openLink: (target: string, cwd: string): Promise<boolean> =>
+    ipcRenderer.invoke('link:open', target, cwd),
+
   // Updates
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('updater:getState'),
@@ -38,6 +46,13 @@ const api = {
     const listener = (_e: unknown, state: UpdateState): void => cb(state)
     ipcRenderer.on('updater:state', listener)
     return () => ipcRenderer.removeListener('updater:state', listener)
+  },
+
+  // Fired in the surviving instance when a second app launch was blocked.
+  onSecondInstance: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('app:second-instance', listener)
+    return () => ipcRenderer.removeListener('app:second-instance', listener)
   },
 
   // PTY
