@@ -15,6 +15,24 @@ let mainWindow: BrowserWindow | null = null
 let ptyManager: PtyManager | null = null
 let isQuitting = false
 
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function openExternalHttp(value: string): void {
+  if (!isHttpUrl(value)) return
+  shell.openExternal(value).catch(() => {})
+}
+
+function stopPtysForRendererRestart(): void {
+  if (!isQuitting) ptyManager?.killAll()
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -39,8 +57,24 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => mainWindow?.show())
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    openExternalHttp(details.url)
     return { action: 'deny' }
+  })
+
+  // If the renderer reloads, crashes, or navigates away, the React-held
+  // terminal model is gone. Stop live PTYs instead of leaving hidden agents
+  // running behind a fresh UI.
+  mainWindow.webContents.on('did-start-navigation', (_e, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) stopPtysForRendererRestart()
+  })
+  mainWindow.webContents.on('render-process-gone', () => stopPtysForRendererRestart())
+  mainWindow.webContents.once('did-finish-load', () => {
+    const appUrl = mainWindow?.webContents.getURL()
+    mainWindow?.webContents.on('will-navigate', (event, url) => {
+      if (url === appUrl) return
+      event.preventDefault()
+      openExternalHttp(url)
+    })
   })
 
   // Exit-confirmation flow (§7 of PLAN.md).

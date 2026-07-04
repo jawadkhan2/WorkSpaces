@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import * as pty from 'node-pty'
 import { DetectedApp, TerminalSpec, TerminalStatus } from '../shared/types'
 import { fallbackCwd, resolveSpawn } from './spawn'
-import { spawnElevatedPty, ElevatedPtyHandle } from './elevated'
+import { spawnElevatedPty } from './elevated'
 
 // Uniform backend shape so local node-pty and elevated broker ptys are
 // indistinguishable to the rest of the app.
@@ -12,6 +12,8 @@ interface PtyBackend {
   write(data: string): void
   resize(cols: number, rows: number): void
   kill(): void
+  onData(cb: (data: string) => void): void
+  onExit(cb: (code: number) => void): void
 }
 
 interface ManagedPty {
@@ -139,6 +141,8 @@ export class PtyManager {
       busy: false
     }
     this.ptys.set(spec.id, managed)
+    backend.onData((data) => this.onData(spec.id, data))
+    backend.onExit(() => this.onExit(spec.id))
     this.ensureAppPolling()
     return { id: spec.id, pid: backend.pid }
   }
@@ -152,27 +156,28 @@ export class PtyManager {
       cwd: fallbackCwd(cwd),
       env: process.env as { [key: string]: string }
     })
-    proc.onData((data) => this.onData(spec.id, data))
-    proc.onExit(() => this.onExit(spec.id))
     return {
       pid: proc.pid,
       write: (d) => proc.write(d),
       resize: (c, r) => proc.resize(c, r),
-      kill: () => proc.kill()
+      kill: () => proc.kill(),
+      onData: (cb) => {
+        proc.onData(cb)
+      },
+      onExit: (cb) => {
+        proc.onExit(({ exitCode }) => cb(exitCode))
+      }
     }
   }
 
   private async createElevated(spec: TerminalSpec, cwd: string): Promise<PtyBackend> {
-    const handle: ElevatedPtyHandle = await spawnElevatedPty({
+    return spawnElevatedPty({
       id: spec.id,
       command: spec.command,
       cwd: fallbackCwd(cwd),
       cols: 80,
       rows: 24
     })
-    handle.onData((data) => this.onData(spec.id, data))
-    handle.onExit(() => this.onExit(spec.id))
-    return handle
   }
 
   private onData(id: string, data: string): void {

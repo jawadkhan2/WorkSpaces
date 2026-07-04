@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { Workspace } from '../../../shared/types'
 import { FolderIcon, GearIcon } from './icons'
 
@@ -28,8 +28,14 @@ export const Sidebar: React.FC<Props> = ({
   onOpenSettings
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null)
+  const cancelRename = useRef(false)
 
   const commitRename = (id: string, el: HTMLDivElement): void => {
+    if (cancelRename.current) {
+      cancelRename.current = false
+      setEditingId(null)
+      return
+    }
     const name = el.textContent?.trim() || ''
     setEditingId(null)
     if (name) onRename(id, name)
@@ -90,7 +96,8 @@ export const Sidebar: React.FC<Props> = ({
                       ;(e.currentTarget as HTMLDivElement).blur()
                     }
                     if (e.key === 'Escape') {
-                      setEditingId(null)
+                      cancelRename.current = true
+                      e.currentTarget.textContent = ws.name
                       ;(e.currentTarget as HTMLDivElement).blur()
                     }
                   }}
@@ -103,6 +110,7 @@ export const Sidebar: React.FC<Props> = ({
                   title="Rename"
                   onClick={(e) => {
                     e.stopPropagation()
+                    cancelRename.current = false
                     setEditingId(ws.id)
                     setTimeout(() => {
                       const el = e.currentTarget.parentElement?.querySelector(

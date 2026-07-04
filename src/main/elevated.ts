@@ -51,8 +51,10 @@ export function spawnElevatedPty(opts: {
     let sock: net.Socket | null = null
     let settled = false
     let authed = false
-    let dataCb: (data: string) => void = () => {}
-    let exitCb: (code: number) => void = () => {}
+    let dataCb: ((data: string) => void) | null = null
+    let exitCb: ((code: number) => void) | null = null
+    const pendingData: string[] = []
+    let pendingExit: number | null = null
     let exited = false
 
     const cleanup = (): void => {
@@ -74,7 +76,12 @@ export function spawnElevatedPty(opts: {
       if (exited) return
       exited = true
       cleanup()
-      exitCb(code)
+      if (exitCb) exitCb(code)
+      else pendingExit = code
+    }
+    const deliverData = (data: string): void => {
+      if (dataCb) dataCb(data)
+      else pendingData.push(data)
     }
 
     const timer = setTimeout(
@@ -132,6 +139,10 @@ export function spawnElevatedPty(opts: {
         })
         return
       }
+      if (conn !== sock) {
+        conn.destroy()
+        return
+      }
       switch (msg.t) {
         case 'spawned':
           if (!settled) {
@@ -145,13 +156,19 @@ export function spawnElevatedPty(opts: {
                 send({ t: 'kill', id: opts.id })
                 setTimeout(() => finishExit(-1), 500)
               },
-              onData: (cb) => (dataCb = cb),
-              onExit: (cb) => (exitCb = cb)
+              onData: (cb) => {
+                dataCb = cb
+                while (pendingData.length) cb(pendingData.shift()!)
+              },
+              onExit: (cb) => {
+                exitCb = cb
+                if (pendingExit !== null) cb(pendingExit)
+              }
             })
           }
           break
         case 'data':
-          dataCb(msg.data || '')
+          deliverData(msg.data || '')
           break
         case 'exit':
           finishExit(msg.code ?? 0)
