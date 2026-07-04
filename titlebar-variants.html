@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WorkSpaces — Title Bar Variants</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-alt: #010409;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #2f81f7;
+    --green: #3fb950;
+    --term-bg: #0a0e14;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #05070a;
+    color: var(--text);
+    padding: 40px;
+  }
+  h1 { font-size: 22px; margin-bottom: 6px; }
+  .intro { color: var(--text-dim); font-size: 14px; margin-bottom: 36px; max-width: 720px; }
+  .variant { margin-bottom: 56px; }
+  .variant h2 { font-size: 16px; margin-bottom: 4px; }
+  .variant h2 .tag {
+    font-size: 11px; font-weight: 600; color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 999px;
+    padding: 2px 8px; margin-left: 8px; vertical-align: 2px;
+  }
+  .variant .desc { color: var(--text-dim); font-size: 13px; margin-bottom: 14px; max-width: 720px; }
+
+  /* window frame mock */
+  .win {
+    width: 860px; height: 340px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; display: flex; flex-direction: column;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+  }
+  .body { flex: 1; display: flex; min-height: 0; }
+  .sidebar {
+    width: 190px; background: var(--bg-alt);
+    border-right: 1px solid var(--border);
+    padding: 14px; font-size: 13px; color: var(--text-dim);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .sidebar .ws-item {
+    padding: 7px 10px; border-radius: 6px; background: var(--panel);
+    color: var(--text); font-size: 13px;
+  }
+  .sidebar .ws-item.dim { background: transparent; color: var(--text-dim); }
+  .main { flex: 1; display: flex; flex-direction: column; }
+  .wsbar {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .wsbar .t { font-size: 14px; font-weight: 600; }
+  .wsbar .p { font-size: 11px; color: var(--text-dim); font-family: Consolas, monospace; }
+  .grid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; background: var(--bg); }
+  .term {
+    background: var(--term-bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; font-family: Consolas, monospace; font-size: 11px; color: var(--text-dim);
+  }
+  .term .g { color: var(--green); }
+
+  /* shared titlebar bits */
+  .brand { font-size: 13px; font-weight: 600; letter-spacing: .3px; }
+  .brand span { color: var(--accent); }
+  .logo-mark {
+    width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--accent), #7c3aed);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 800; color: #fff;
+  }
+  .controls { display: flex; margin-left: auto; height: 100%; }
+  .controls button {
+    width: 44px; height: 100%; border: 0; background: transparent; color: var(--text-dim);
+    font-size: 11px; cursor: pointer; font-family: 'Segoe UI', sans-serif;
+  }
+  .controls button:hover { background: rgba(255,255,255,.08); color: var(--text); }
+  .controls button.close:hover { background: #e81123; color: #fff; }
+  .drag-hint {
+    font-size: 10px; color: #4a5361; letter-spacing: 1px; text-transform: uppercase;
+    margin-left: 14px;
+  }
+
+  /* variant A */
+  .tb-a {
+    height: 36px; background: var(--bg-alt); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding-left: 14px; gap: 9px; flex-shrink: 0;
+  }
+  .tb-a .update-pill {
+    margin-left: 14px; padding: 3px 11px; border-radius: 999px; font-size: 11px;
+    font-weight: 500; color: #fff; background: var(--accent); border: 0;
+  }
+
+  /* variant B */
+  .tb-b {
+    height: 44px; background: var(--bg-alt); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding-left: 14px; gap: 12px; flex-shrink: 0;
+  }
+  .tb-b .ws-title { display: flex; flex-direction: column; line-height: 1.2; }
+  .tb-b .ws-title .t { font-size: 13px; font-weight: 600; }
+  .tb-b .ws-title .p { font-size: 10px; color: var(--text-dim); font-family: Consolas, monospace; }
+  .tb-b .divider { width: 1px; height: 20px; background: var(--border); }
+  .tb-b .actions { display: flex; gap: 6px; margin-left: auto; padding-right: 10px; }
+  .tb-b .actions button {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    font-size: 11px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  }
+
+  /* variant C */
+  .tb-c {
+    height: 32px; background: transparent; position: relative;
+    display: flex; align-items: center; flex-shrink: 0;
+  }
+  .win-c { position: relative; }
+  .win-c .body { margin-top: -32px; padding-top: 0; height: 100%; }
+  .win-c .sidebar { padding-top: 40px; }
+  .win-c .main { padding-top: 32px; }
+  .sidebar .side-brand {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>WorkSpaces — Custom Title Bar Variants</h1>
+<p class="intro">
+  All three assume a frameless window (<code>titleBarStyle: 'hidden'</code> + Windows
+  <code>titleBarOverlay</code> or custom controls). Native bar gone — logo appears exactly once.
+  Window control buttons shown for placement; real ones come from Electron overlay or custom IPC buttons.
+</p>
+
+<!-- ============ VARIANT A ============ -->
+<div class="variant">
+  <h2>Variant A — Slim Brand Bar <span class="tag">minimal change</span></h2>
+  <p class="desc">
+    Current in-app bar becomes THE title bar. 36px, brand left, drag region middle,
+    window controls right. Update pill stays next to brand. Least code churn.
+  </p>
+  <div class="win">
+    <div class="tb-a">
+      <div class="logo-mark">W</div>
+      <div class="brand">Work<span>Spaces</span></div>
+      <div class="update-pill">↻ Restart to update</div>
+      <div class="drag-hint">· · · drag region · · ·</div>
+      <div class="controls">
+        <button>─</button><button>▢</button><button class="close">✕</button>
+      </div>
+    </div>
+    <div class="body">
+      <div class="sidebar">
+        <div class="ws-item">my-app</div>
+        <div class="ws-item dim">api-server</div>
+        <div class="ws-item dim">dotfiles</div>
+      </div>
+      <div class="main">
+        <div class="wsbar">
+          <div>
+            <div class="t">my-app</div>
+            <div class="p">C:\Users\jawad\Projects\my-app</div>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="term"><span class="g">➜</span> npm run dev</div>
+          <div class="term"><span class="g">➜</span> claude</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ VARIANT B ============ -->
+<div class="variant">
+  <h2>Variant B — Unified Command Bar <span class="tag">saves vertical space</span></h2>
+  <p class="desc">
+    Title bar and workspace bar merge into one 44px bar: brand mark, divider, active workspace
+    name + path, then Arrange / New Terminal actions, then window controls. Kills a whole row —
+    more room for terminals. VS Code-style.
+  </p>
+  <div class="win">
+    <div class="tb-b">
+      <div class="logo-mark">W</div>
+      <div class="brand">Work<span>Spaces</span></div>
+      <div class="divider"></div>
+      <div class="ws-title">
+        <div class="t">my-app</div>
+        <div class="p">C:\Users\jawad\Projects\my-app</div>
+      </div>
+      <div class="actions">
+        <button>⊞ Arrange</button>
+        <button>+ Terminal</button>
+      </div>
+      <div class="controls">
+        <button>─</button><button>▢</button><button class="close">✕</button>
+      </div>
+    </div>
+    <div class="body">
+      <div class="sidebar">
+        <div class="ws-item">my-app</div>
+        <div class="ws-item dim">api-server</div>
+        <div class="ws-item dim">dotfiles</div>
+      </div>
+      <div class="main">
+        <div class="grid">
+          <div class="term"><span class="g">➜</span> npm run dev</div>
+          <div class="term"><span class="g">➜</span> claude</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ VARIANT C ============ -->
+<div class="variant">
+  <h2>Variant C — Invisible Bar, Brand in Sidebar <span class="tag">max minimal</span></h2>
+  <p class="desc">
+    No visible title bar. Thin 32px transparent drag strip overlays the top; window controls float
+    top-right. Brand lives in sidebar header only. Cleanest look, most terminal space,
+    but drag target is subtle and collapsed sidebar hides brand text (mark stays).
+  </p>
+  <div class="win win-c">
+    <div class="tb-c">
+      <div class="drag-hint" style="margin-left:210px">· · · transparent drag strip · · ·</div>
+      <div class="controls">
+        <button>─</button><button>▢</button><button class="close">✕</button>
+      </div>
+    </div>
+    <div class="body">
+      <div class="sidebar">
+        <div class="side-brand">
+          <div class="logo-mark">W</div>
+          <div class="brand">Work<span>Spaces</span></div>
+        </div>
+        <div class="ws-item">my-app</div>
+        <div class="ws-item dim">api-server</div>
+        <div class="ws-item dim">dotfiles</div>
+      </div>
+      <div class="main">
+        <div class="wsbar">
+          <div>
+            <div class="t">my-app</div>
+            <div class="p">C:\Users\jawad\Projects\my-app</div>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="term"><span class="g">➜</span> npm run dev</div>
+          <div class="term"><span class="g">➜</span> claude</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

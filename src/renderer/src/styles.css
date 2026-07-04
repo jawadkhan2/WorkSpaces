@@ -28,20 +28,18 @@ body {
 
 /* ---------- Title bar ---------- */
 .titlebar {
-  height: 40px; background: var(--bg-alt); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; padding: 0 16px; gap: 10px; flex-shrink: 0;
+  height: 36px; background: var(--bg-alt); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 14px; gap: 9px; flex-shrink: 0;
   -webkit-app-region: drag;
 }
-.titlebar .app-name { font-size: 14px; font-weight: 600; letter-spacing: 0.3px; }
-.titlebar .app-name span { color: var(--accent); }
-.titlebar .update-pill {
-  -webkit-app-region: no-drag;
-  margin-left: auto; padding: 4px 12px; border-radius: 999px; font-size: 12px;
-  font-weight: 500; cursor: pointer; color: #fff;
-  background: var(--accent); border: 1px solid var(--accent);
-  animation: toast-in 0.18s ease-out;
+.titlebar .logo-mark {
+  width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0;
+  background: linear-gradient(135deg, var(--accent), #7c3aed);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 800; color: #fff;
 }
-.titlebar .update-pill:hover { filter: brightness(1.1); }
+.titlebar .app-name { font-size: 13px; font-weight: 600; letter-spacing: 0.3px; }
+.titlebar .app-name span { color: var(--accent); }
 
 .layout { flex: 1; display: flex; min-height: 0; }
 

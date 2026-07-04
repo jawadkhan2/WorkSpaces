@@ -314,18 +314,10 @@ export default function App(): React.JSX.Element {
   return (
     <div className="app" onClick={() => { setArrangeOpen(false); setNewMenuOpen(false) }}>
       <div className="titlebar">
+        <div className="logo-mark">W</div>
         <div className="app-name">
           Work<span>Spaces</span>
         </div>
-        {updateState.phase === 'downloaded' && (
-          <button
-            className="update-pill"
-            title={`WorkSpaces ${updateState.version} downloaded — restart to apply`}
-            onClick={() => window.api.installUpdate()}
-          >
-            ↻ Restart to update
-          </button>
-        )}
       </div>
 
       <div className="layout">

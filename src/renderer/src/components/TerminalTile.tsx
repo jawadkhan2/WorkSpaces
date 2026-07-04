@@ -279,8 +279,32 @@ export const TerminalTile: React.FC<Props> = ({
     ro.observe(bodyRef.current)
     const bodyEl = bodyRef.current
 
+    // Moving the window to a monitor with different DPI scaling (2K ↔ 4K)
+    // changes devicePixelRatio without necessarily changing the tile's CSS
+    // size, so the ResizeObserver never fires — but glyphs re-rasterize and
+    // cell metrics shift, leaving the bottom rows clipped until a refit.
+    // A resolution media query only matches one exact DPR, so re-arm after
+    // every change to catch the next monitor hop.
+    let dprQuery: MediaQueryList | null = null
+    const onDprChange = (): void => {
+      armDprListener()
+      // Re-rasterize the font at the new DPR, then refit once the renderer
+      // has re-measured cells (rAF), with a late pass in case metrics settle
+      // a frame or two later during the monitor transition.
+      xterm.clearTextureAtlas()
+      requestAnimationFrame(() => syncSize())
+      setTimeout(() => syncSize(), 150)
+    }
+    const armDprListener = (): void => {
+      dprQuery?.removeEventListener('change', onDprChange)
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      dprQuery.addEventListener('change', onDprChange)
+    }
+    armDprListener()
+
     return () => {
       bodyEl.removeEventListener('contextmenu', onContextMenu)
+      dprQuery?.removeEventListener('change', onDprChange)
       linkProvider.dispose()
       ro.disconnect()
       disposeData()

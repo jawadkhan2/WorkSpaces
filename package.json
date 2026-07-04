@@ -1,6 +1,6 @@
 {
   "name": "workspaces",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "WorkSpaces — terminal manager for AI agents",
   "main": "./out/main/index.js",
   "repository": {
