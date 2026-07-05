@@ -28,7 +28,9 @@ const DOT_LABEL: Record<string, string> = {
   exited: 'stopped'
 }
 
-export const TerminalGrid: React.FC<Props> = ({
+// Memoized: with App's stable callbacks and identity-preserving terminal
+// updates, only the grid whose workspace actually changed re-renders.
+export const TerminalGrid: React.FC<Props> = React.memo(function TerminalGrid({
   visible,
   cwd,
   layout,
@@ -43,7 +45,7 @@ export const TerminalGrid: React.FC<Props> = ({
   onSpawnError,
   onExpand,
   onShowAll
-}) => {
+}) {
   // In "single" layout only the focused (or first) terminal shows, but every
   // tile stays mounted (hidden via CSS) so xterm scrollback survives.
   const single = layout === 'single'
@@ -71,12 +73,12 @@ export const TerminalGrid: React.FC<Props> = ({
           visible={visible}
           hidden={single && t.id !== shownId}
           started={started}
-          onFocus={() => onFocus(t.id)}
-          onClose={() => onClose(t.id)}
-          onToggleAdmin={() => onToggleAdmin(t.id)}
-          onRename={(title) => onRename(t.id, title)}
-          onSpawnError={(msg) => onSpawnError(t.id, msg)}
-          onExpand={() => onExpand(t.id)}
+          onFocus={onFocus}
+          onClose={onClose}
+          onToggleAdmin={onToggleAdmin}
+          onRename={onRename}
+          onSpawnError={onSpawnError}
+          onExpand={onExpand}
         />
       ))}
       {background.length > 0 && (
@@ -112,4 +114,4 @@ export const TerminalGrid: React.FC<Props> = ({
       )}
     </div>
   )
-}
+})

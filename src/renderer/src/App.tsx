@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AGENT_PRESETS,
   AgentPreset,
@@ -16,6 +16,10 @@ import { TerminalGrid } from './components/TerminalGrid'
 import { SettingsModal } from './components/SettingsModal'
 import { useConfirm } from './hooks/useConfirm'
 import appIconUrl from './assets/app-icon.svg'
+
+// Shared empty list so workspaces with no terminals keep a stable prop
+// identity (a fresh [] every render would defeat TerminalGrid's memo).
+const NO_TERMINALS: RuntimeTerminal[] = []
 
 const uuid = (): string =>
   typeof crypto?.randomUUID === 'function'
@@ -37,19 +41,45 @@ export default function App(): React.JSX.Element {
   const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([])
   const [appVersion, setAppVersion] = useState('')
   const [updateState, setUpdateState] = useState<UpdateState>({ phase: 'idle' })
-  const { confirm, confirmNode } = useConfirm()
+  const { confirm, cancel, confirmNode } = useConfirm()
 
   const started = useRef<Set<string>>(new Set())
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const confirmRef = useRef(confirm)
   confirmRef.current = confirm
+  const cancelRef = useRef(cancel)
+  cancelRef.current = cancel
+  // Live mirrors for stable (useCallback []) handlers, so tiles/grids can be
+  // memoized without their callbacks capturing stale state.
+  const activeRef = useRef<Workspace | null>(null)
+  const terminalsRef = useRef(terminals)
+  terminalsRef.current = terminals
 
-  const pushToast = (msg: string): void => {
+  const pushToast = useCallback((msg: string): void => {
     const id = uuid()
     setToasts((prev) => [...prev, { id, msg }])
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 6000)
-  }
+  }, [])
+
+  // Patch a single terminal in place, preserving every untouched workspace
+  // list's identity — a status pill flip must not re-render every tile in
+  // every workspace.
+  const patchTerminal = useCallback(
+    (id: string, patch: (t: RuntimeTerminal) => RuntimeTerminal): void => {
+      setTerminals((prev) => {
+        for (const [wsId, list] of Object.entries(prev)) {
+          const idx = list.findIndex((t) => t.id === id)
+          if (idx === -1) continue
+          const nextList = list.slice()
+          nextList[idx] = patch(list[idx])
+          return { ...prev, [wsId]: nextList }
+        }
+        return prev
+      })
+    },
+    []
+  )
 
   const seedShell = (wsId: string): RuntimeTerminal => ({
     id: uuid(),
@@ -95,42 +125,35 @@ export default function App(): React.JSX.Element {
   }, [])
 
   // The main process (quit, restart-to-update, external links) asks the
-  // renderer to show its custom modal instead of a native OS dialog.
+  // renderer to show its custom modal instead of a native OS dialog. A
+  // confirm:cancel means main gave up waiting — dismiss the dead modal.
   useEffect(() => {
-    return window.api.onConfirmRequest((id, opts) => {
-      confirmRef.current(opts).then((ok) => window.api.respondConfirm(id, ok))
+    const offRequest = window.api.onConfirmRequest((id, opts) => {
+      confirmRef.current(opts, id).then((ok) => window.api.respondConfirm(id, ok))
     })
+    const offCancel = window.api.onConfirmCancel((id) => cancelRef.current(id))
+    return () => {
+      offRequest()
+      offCancel()
+    }
   }, [])
 
   // Status stream.
   useEffect(() => {
     return window.api.onStatus(({ id, status }) => {
-      setTerminals((prev) => {
-        const next: Record<string, RuntimeTerminal[]> = {}
-        for (const [wsId, list] of Object.entries(prev)) {
-          next[wsId] = list.map((t) =>
-            t.id === id ? { ...t, status, app: status === 'exited' ? null : t.app } : t
-          )
-        }
-        return next
-      })
+      patchTerminal(id, (t) => ({ ...t, status, app: status === 'exited' ? null : t.app }))
     })
-  }, [])
+  }, [patchTerminal])
 
   // Detected-app stream (e.g. Claude Code running inside a shell).
   useEffect(() => {
     return window.api.onApp(({ id, app }) => {
-      setTerminals((prev) => {
-        const next: Record<string, RuntimeTerminal[]> = {}
-        for (const [wsId, list] of Object.entries(prev)) {
-          next[wsId] = list.map((t) => (t.id === id ? { ...t, app } : t))
-        }
-        return next
-      })
+      patchTerminal(id, (t) => ({ ...t, app }))
     })
-  }, [])
+  }, [patchTerminal])
 
   const active = workspaces.find((w) => w.id === activeId) || null
+  activeRef.current = active
   // Per-workspace summary for the sidebar dot: "waiting" (an agent needs the
   // user) always outranks "running", since it's the more actionable state.
   const liveStatus = useMemo(() => {
@@ -200,14 +223,16 @@ export default function App(): React.JSX.Element {
     }
   }
 
-  const setLayout = (layout: LayoutMode): void => {
+  const setLayout = useCallback((layout: LayoutMode): void => {
+    const active = activeRef.current
     if (!active) return
     window.api.setLayout(active.id, layout)
     setWorkspaces((prev) => prev.map((w) => (w.id === active.id ? { ...w, layout } : w)))
     setArrangeOpen(false)
-  }
+  }, [])
 
-  const addTerminal = (preset: AgentPreset): void => {
+  const addTerminal = useCallback((preset: AgentPreset): void => {
+    const active = activeRef.current
     if (!active) return
     const term: RuntimeTerminal = {
       id: uuid(),
@@ -221,49 +246,50 @@ export default function App(): React.JSX.Element {
     setTerminals((prev) => ({ ...prev, [active.id]: [...(prev[active.id] || []), term] }))
     setFocused((prev) => ({ ...prev, [active.id]: term.id }))
     setNewMenuOpen(false)
-  }
+  }, [])
 
   // Two-phase close: mark the tile as closing so it can play its exit
   // animation, then actually unmount it.
-  const closeTerminal = (id: string): void => {
-    window.api.killPty(id)
-    started.current.delete(id)
-    setTerminals((prev) => {
-      const next: Record<string, RuntimeTerminal[]> = {}
-      for (const [wsId, list] of Object.entries(prev)) {
-        next[wsId] = list.map((t) => (t.id === id ? { ...t, closing: true } : t))
-      }
-      return next
-    })
-    // Move focus off the closing tile immediately.
-    setFocused((prev) => {
-      const next = { ...prev }
-      for (const [wsId, focusedId] of Object.entries(prev)) {
-        if (focusedId === id) {
-          next[wsId] =
-            (terminals[wsId] || []).find((t) => t.id !== id && !t.closing)?.id ?? null
+  const closeTerminal = useCallback(
+    (id: string): void => {
+      window.api.killPty(id)
+      started.current.delete(id)
+      patchTerminal(id, (t) => ({ ...t, closing: true }))
+      // Move focus off the closing tile immediately.
+      setFocused((prev) => {
+        let changed = false
+        const next = { ...prev }
+        for (const [wsId, focusedId] of Object.entries(prev)) {
+          if (focusedId === id) {
+            next[wsId] =
+              (terminalsRef.current[wsId] || []).find((t) => t.id !== id && !t.closing)?.id ??
+              null
+            changed = true
+          }
         }
-      }
-      return next
-    })
-    setTimeout(() => {
-      setTerminals((prev) => {
-        const next: Record<string, RuntimeTerminal[]> = {}
-        for (const [wsId, list] of Object.entries(prev)) {
-          next[wsId] = list.filter((t) => t.id !== id)
-        }
-        return next
+        return changed ? next : prev
       })
-    }, 200)
-  }
+      setTimeout(() => {
+        setTerminals((prev) => {
+          for (const [wsId, list] of Object.entries(prev)) {
+            if (!list.some((t) => t.id === id)) continue
+            return { ...prev, [wsId]: list.filter((t) => t.id !== id) }
+          }
+          return prev
+        })
+      }, 200)
+    },
+    [patchTerminal]
+  )
 
   // Real elevation can't be applied to a running process — the terminal is
   // restarted through the UAC broker (or back to a normal shell).
-  const toggleAdmin = async (id: string): Promise<void> => {
+  const toggleAdmin = useCallback(async (id: string): Promise<void> => {
+    const active = activeRef.current
     if (!active) return
-    const t = (terminals[active.id] || []).find((x) => x.id === id)
+    const t = (terminalsRef.current[active.id] || []).find((x) => x.id === id)
     if (!t) return
-    const ok = await confirm(
+    const ok = await confirmRef.current(
       t.admin
         ? {
             title: 'Drop administrator rights?',
@@ -292,34 +318,42 @@ export default function App(): React.JSX.Element {
       [active.id]: (prev[active.id] || []).map((x) => (x.id === id ? fresh : x))
     }))
     setFocused((prev) => ({ ...prev, [active.id]: fresh.id }))
-  }
+  }, [])
 
-  const renameTerminal = (id: string, title: string): void => {
-    setTerminals((prev) => {
-      const next: Record<string, RuntimeTerminal[]> = {}
-      for (const [wsId, list] of Object.entries(prev)) {
-        next[wsId] = list.map((t) => (t.id === id ? { ...t, title } : t))
-      }
-      return next
-    })
-  }
+  const renameTerminal = useCallback(
+    (id: string, title: string): void => {
+      patchTerminal(id, (t) => ({ ...t, title }))
+    },
+    [patchTerminal]
+  )
 
   // A terminal whose PTY failed to start (e.g. UAC declined): mark stopped + toast.
-  const onSpawnError = (id: string, msg: string): void => {
-    pushToast(msg)
-    setTerminals((prev) => {
-      const next: Record<string, RuntimeTerminal[]> = {}
-      for (const [wsId, list] of Object.entries(prev)) {
-        next[wsId] = list.map((t) => (t.id === id ? { ...t, status: 'exited' } : t))
-      }
-      return next
-    })
-  }
+  const onSpawnError = useCallback(
+    (id: string, msg: string): void => {
+      pushToast(msg)
+      patchTerminal(id, (t) => ({ ...t, status: 'exited' }))
+    },
+    [patchTerminal, pushToast]
+  )
 
-  const setFocusedId = (id: string): void => {
+  const setFocusedId = useCallback((id: string): void => {
+    const active = activeRef.current
     if (!active) return
     setFocused((prev) => ({ ...prev, [active.id]: id }))
-  }
+  }, [])
+
+  // Stable expand/show-all handlers so memoized grids don't re-render on
+  // unrelated App state changes (toasts, menus, update pill).
+  const expandTerminal = useCallback(
+    (id: string): void => {
+      const active = activeRef.current
+      if (!active) return
+      setFocusedId(id)
+      setLayout(active.layout === 'single' ? 'auto' : 'single')
+    },
+    [setFocusedId, setLayout]
+  )
+  const showAllTerminals = useCallback((): void => setLayout('auto'), [setLayout])
 
   const changeSettings = (partial: Partial<Settings>): void => {
     window.api.setSettings(partial).then(setSettingsState)
@@ -432,7 +466,7 @@ export default function App(): React.JSX.Element {
                     visible={ws.id === activeId}
                     cwd={ws.path}
                     layout={ws.layout}
-                    terminals={terminals[ws.id] || []}
+                    terminals={terminals[ws.id] ?? NO_TERMINALS}
                     focusedId={focused[ws.id] ?? (terminals[ws.id]?.[0]?.id || null)}
                     started={started}
                     onAdd={addTerminal}
@@ -441,11 +475,8 @@ export default function App(): React.JSX.Element {
                     onToggleAdmin={toggleAdmin}
                     onRename={renameTerminal}
                     onSpawnError={onSpawnError}
-                    onExpand={(id) => {
-                      setFocusedId(id)
-                      setLayout(active.layout === 'single' ? 'auto' : 'single')
-                    }}
-                    onShowAll={() => setLayout('auto')}
+                    onExpand={expandTerminal}
+                    onShowAll={showAllTerminals}
                   />
                 ))}
               </div>

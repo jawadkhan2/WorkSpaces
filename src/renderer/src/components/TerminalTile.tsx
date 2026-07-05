@@ -14,12 +14,14 @@ interface Props {
   visible: boolean
   hidden?: boolean
   started: React.MutableRefObject<Set<string>>
-  onFocus: () => void
-  onClose: () => void
-  onToggleAdmin: () => void
-  onRename: (title: string) => void
-  onSpawnError: (msg: string) => void
-  onExpand: () => void
+  // Id-based and stable (useCallback in App), so this tile can be memoized —
+  // otherwise every status flip anywhere re-renders every tile.
+  onFocus: (id: string) => void
+  onClose: (id: string) => void
+  onToggleAdmin: (id: string) => void
+  onRename: (id: string, title: string) => void
+  onSpawnError: (id: string, msg: string) => void
+  onExpand: (id: string) => void
 }
 
 const STATUS_LABEL: Record<TerminalStatus, string> = {
@@ -42,7 +44,7 @@ const XTERM_THEME = {
   brightBlack: '#8b949e'
 }
 
-export const TerminalTile: React.FC<Props> = ({
+export const TerminalTile: React.FC<Props> = React.memo(function TerminalTile({
   term,
   cwd,
   focused,
@@ -55,7 +57,7 @@ export const TerminalTile: React.FC<Props> = ({
   onRename,
   onSpawnError,
   onExpand
-}) => {
+}) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -103,7 +105,7 @@ export const TerminalTile: React.FC<Props> = ({
   const commitTitle = (): void => {
     setEditing(false)
     const title = draftTitle.trim()
-    if (title && title !== term.title) onRename(title)
+    if (title && title !== term.title) onRename(term.id, title)
     else setDraftTitle(term.title)
   }
 
@@ -155,6 +157,10 @@ export const TerminalTile: React.FC<Props> = ({
     const oscHandler = xterm.parser.registerOscHandler(52, (payload) => {
       const b64 = payload.slice(payload.indexOf(';') + 1)
       if (!b64 || b64 === '?') return true
+      // Base64 inflates ~4/3, so anything longer than MAX*1.4 can't fit the
+      // clipboard cap — skip before paying for a multi-MB atob on the UI
+      // thread.
+      if (b64.length > MAX_CLIPBOARD_TEXT * 1.4) return true
       let text: string
       try {
         const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -220,7 +226,7 @@ export const TerminalTile: React.FC<Props> = ({
       // Keep the tile's focus tracking working (the outer div's mousedown, our
       // stopped propagation would skip) and stop xterm from shipping the click
       // to the PTY as a mouse report.
-      onFocus()
+      onFocus(term.id)
       e.stopImmediatePropagation()
     }
     bodyRef.current.addEventListener('mousedown', swallowRightButton, true)
@@ -300,6 +306,10 @@ export const TerminalTile: React.FC<Props> = ({
           cwd
         )
         .then(() => {
+          // Resizes sent while the PTY was still spawning (elevated creates
+          // sit at the UAC prompt) were dropped in main — clear the memo so
+          // the current size is re-sent, or the PTY stays at 80×24.
+          lastSize.current = null
           syncSize()
           // Seamless UX: a freshly created terminal that the user is looking
           // at should take keyboard focus (no extra click to start typing —
@@ -307,13 +317,20 @@ export const TerminalTile: React.FC<Props> = ({
           if (isActiveRef.current) xterm.focus()
         })
         .catch((err: Error) => {
-          // e.g. UAC declined, broker timeout, bad shell.
+          // e.g. UAC declined, broker timeout, bad shell, closed during UAC.
           const msg = String(err.message || err).replace(
             /^Error invoking remote method 'pty:create': (Error: )?/,
             ''
           )
-          xterm.writeln(`\x1b[31m[terminal failed to start: ${msg}]\x1b[0m`)
-          onSpawnError(msg)
+          // User closed the tile while the spawn (UAC prompt) was pending —
+          // that's a deliberate action, not an error to toast about.
+          if (msg.includes('closed before it finished starting')) return
+          try {
+            xterm.writeln(`\x1b[31m[terminal failed to start: ${msg}]\x1b[0m`)
+          } catch {
+            /* tile may already be unmounted (closed while spawning) */
+          }
+          onSpawnError(term.id, msg)
         })
     }
 
@@ -377,7 +394,7 @@ export const TerminalTile: React.FC<Props> = ({
         claudeLive ? ' claude-live' : ''
       }${term.closing ? ' closing' : ''}${term.status === 'waiting' ? ' waiting' : ''}`}
       style={hidden ? { display: 'none' } : undefined}
-      onMouseDown={onFocus}
+      onMouseDown={() => onFocus(term.id)}
     >
       <div className="term-head">
         <span className="agent">
@@ -438,19 +455,33 @@ export const TerminalTile: React.FC<Props> = ({
           title={term.admin ? 'Running as admin' : 'Run as admin'}
           onClick={(e) => {
             e.stopPropagation()
-            onToggleAdmin()
+            onToggleAdmin(term.id)
           }}
         >
           🛡
         </button>
-        <button className="ctl" title="Expand" onClick={(e) => { e.stopPropagation(); onExpand() }}>
+        <button
+          className="ctl"
+          title="Expand"
+          onClick={(e) => {
+            e.stopPropagation()
+            onExpand(term.id)
+          }}
+        >
           ⤢
         </button>
-        <button className="ctl" title="Close" onClick={(e) => { e.stopPropagation(); onClose() }}>
+        <button
+          className="ctl"
+          title="Close"
+          onClick={(e) => {
+            e.stopPropagation()
+            onClose(term.id)
+          }}
+        >
           ✕
         </button>
       </div>
       <div className="term-body" ref={bodyRef} />
     </div>
   )
-}
+})

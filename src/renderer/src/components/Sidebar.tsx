@@ -122,10 +122,12 @@ export const Sidebar: React.FC<Props> = ({
                     e.stopPropagation()
                     cancelRename.current = false
                     setEditingId(ws.id)
+                    // Capture now — e.currentTarget is nulled once the handler
+                    // returns, so reading it inside the timeout throws and the
+                    // name field never gets focus/selection.
+                    const parent = e.currentTarget.parentElement
                     setTimeout(() => {
-                      const el = e.currentTarget.parentElement?.querySelector(
-                        '.name'
-                      ) as HTMLDivElement | null
+                      const el = parent?.querySelector('.name') as HTMLDivElement | null
                       el?.focus()
                       const range = document.createRange()
                       if (el) {

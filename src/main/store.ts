@@ -35,7 +35,12 @@ class Store {
 
   private persist(): void {
     try {
-      fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2), 'utf-8')
+      // Write-then-rename so a crash mid-write can't truncate config.json —
+      // a corrupt file would make load() fall back to defaults and silently
+      // drop every workspace.
+      const tmp = `${this.file}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf-8')
+      fs.renameSync(tmp, this.file)
     } catch (err) {
       console.error('Failed to persist store:', err)
     }

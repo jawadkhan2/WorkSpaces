@@ -11,7 +11,10 @@ export function resolveSpawn(command: string): { shell: string; args: string[] }
     return { shell: sh, args: ['-lc', `${command}; exec ${sh}`] }
   }
   if (process.platform === 'win32') {
-    return { shell: process.env.COMSPEC || 'powershell.exe', args: [] }
+    // Explicitly PowerShell: COMSPEC is effectively always cmd.exe, so using
+    // it here silently made cmd the default shell despite the app's
+    // PowerShell-flavored UX (`clear` semantics, prompts).
+    return { shell: 'powershell.exe', args: ['-NoLogo'] }
   }
   return { shell: process.env.SHELL || '/bin/bash', args: [] }
 }

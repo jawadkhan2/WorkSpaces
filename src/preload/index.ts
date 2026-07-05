@@ -61,6 +61,12 @@ const api = {
   },
   respondConfirm: (id: string, ok: boolean): void =>
     ipcRenderer.send('confirm:respond', id, ok),
+  // Main timed out waiting for the answer — the modal should be dismissed.
+  onConfirmCancel: (cb: (id: string) => void): (() => void) => {
+    const listener = (_e: unknown, id: string): void => cb(id)
+    ipcRenderer.on('confirm:cancel', listener)
+    return () => ipcRenderer.removeListener('confirm:cancel', listener)
+  },
 
   // Fired in the surviving instance when a second app launch was blocked.
   onSecondInstance: (cb: () => void): (() => void) => {

@@ -48,7 +48,15 @@ export function requestConfirm(
       resolve(ok)
     }
     const onGone = (): void => settle(false)
-    const timer = setTimeout(() => settle(false), RESPONSE_TIMEOUT_MS)
+    const timer = setTimeout(() => {
+      // Tell the renderer to drop the (now unanswerable) modal — otherwise the
+      // dialog stays on screen, its eventual reply targets a dead id, nothing
+      // happens, and the user has to trigger the action again.
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send('confirm:cancel', id)
+      }
+      settle(false)
+    }, RESPONSE_TIMEOUT_MS)
 
     pending.set(id, settle)
     win.webContents.once('destroyed', onGone)

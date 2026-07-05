@@ -63,9 +63,11 @@ function listProcesses(): Promise<ProcInfo[]> {
   return new Promise((resolve, reject) => {
     if (process.platform === 'win32') {
       // CommandLine is only fetched for script hosts (node/bun/deno) — that is
-      // where `claude` hides when installed via npm.
+      // where `claude` hides when installed via npm. -Property keeps WMI from
+      // serializing every property of every process on each poll.
       const script =
-        "Get-CimInstance Win32_Process | ForEach-Object { '{0}|{1}|{2}|{3}' -f " +
+        'Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine | ' +
+        "ForEach-Object { '{0}|{1}|{2}|{3}' -f " +
         "$_.ProcessId,$_.ParentProcessId,$_.Name,($(if ($_.Name -match '^(node|bun|deno)') { $_.CommandLine } else { '' })) }"
       execFile(
         'powershell.exe',
@@ -203,13 +205,42 @@ export class PtyManager {
   private appTimer: NodeJS.Timeout | null = null
   private appIdleSweepTimer: NodeJS.Timeout | null = null
   private appPollBusy = false
+  // Creates still awaiting their backend (elevated ones sit at the UAC prompt
+  // for seconds/minutes). A kill() arriving for one of these ids can't find a
+  // map entry yet — record it so create() can abort instead of inserting an
+  // orphaned (worst case: elevated) PTY that no tile owns.
+  private pendingCreates = new Set<string>()
+  private killedWhilePending = new Set<string>()
+  // Renderer-bound output is coalesced per flush tick instead of one IPC
+  // message per PTY chunk — heavy output (build logs) otherwise floods the
+  // channel with thousands of tiny messages a second.
+  private dataBuf = new Map<string, string[]>()
+  private dataFlushTimer: NodeJS.Timeout | null = null
 
   constructor(private getWindow: () => BrowserWindow | null) {}
 
   async create(spec: TerminalSpec, cwd: string): Promise<{ id: string; pid: number }> {
-    const backend = spec.admin
-      ? await this.createElevated(spec, cwd)
-      : this.createLocal(spec, cwd)
+    if (this.ptys.has(spec.id) || this.pendingCreates.has(spec.id)) {
+      throw new Error('A terminal with this id already exists')
+    }
+    this.pendingCreates.add(spec.id)
+    let backend: PtyBackend
+    try {
+      backend = spec.admin
+        ? await this.createElevated(spec, cwd)
+        : this.createLocal(spec, cwd)
+    } finally {
+      this.pendingCreates.delete(spec.id)
+    }
+    if (this.killedWhilePending.delete(spec.id)) {
+      // Tile was closed while the UAC prompt was up — don't adopt the backend.
+      try {
+        backend.kill()
+      } catch {
+        /* already gone */
+      }
+      throw new Error('Terminal was closed before it finished starting')
+    }
 
     const managed: ManagedPty = {
       spec,
@@ -275,7 +306,7 @@ export class PtyManager {
     if (!managed) return
     const now = Date.now()
     managed.lastData = now
-    this.getWindow()?.webContents.send(`pty:data:${id}`, data)
+    this.queueData(id, data)
 
     // Fast path for app detection: programs that set the terminal title via
     // OSC 0/2 (Claude Code does) reveal themselves before the next poll.
@@ -325,7 +356,13 @@ export class PtyManager {
       this.setStatus(managed, 'running')
     }
     if (managed.waitTimer) clearTimeout(managed.waitTimer)
-    if (WAIT_PATTERNS.some((re) => re.test(tail))) {
+    // Match WAIT phrases only against the last non-empty line — the shell's
+    // current prompt — not the whole 400-char tailCarry. A prompt lives on the
+    // bottom line; matching the full buffer would fire on a WAIT phrase that
+    // has already scrolled off (a prior `press enter`, `continue?`, etc.),
+    // planting a spurious 'waiting' the user then has to type out of.
+    const lastLine = tail.split('\n').reduce((acc, l) => (l.trim() ? l : acc), '')
+    if (WAIT_PATTERNS.some((re) => re.test(lastLine))) {
       managed.waitTimer = setTimeout(() => this.setStatus(managed, 'waiting'), 400)
     } else {
       // Programs like dev servers emit output in bursts with long silences in
@@ -343,9 +380,38 @@ export class PtyManager {
     if (managed.waitTimer) clearTimeout(managed.waitTimer)
     this.setStatus(managed, 'exited')
     this.setApp(managed, null)
+    // Deliver any output still sitting in the coalescing buffer before the
+    // exit event, so the terminal's final lines aren't lost.
+    this.flushData()
     this.getWindow()?.webContents.send(`pty:exit:${id}`)
     this.ptys.delete(id)
     this.stopAppPollingIfIdle()
+  }
+
+  // ---- Renderer output coalescing ----
+
+  private queueData(id: string, data: string): void {
+    const buf = this.dataBuf.get(id)
+    if (buf) buf.push(data)
+    else this.dataBuf.set(id, [data])
+    if (!this.dataFlushTimer) {
+      this.dataFlushTimer = setTimeout(() => this.flushData(), 8)
+    }
+  }
+
+  private flushData(): void {
+    if (this.dataFlushTimer) {
+      clearTimeout(this.dataFlushTimer)
+      this.dataFlushTimer = null
+    }
+    if (this.dataBuf.size === 0) return
+    const win = this.getWindow()
+    if (win && !win.isDestroyed()) {
+      for (const [id, chunks] of this.dataBuf) {
+        win.webContents.send(`pty:data:${id}`, chunks.length === 1 ? chunks[0] : chunks.join(''))
+      }
+    }
+    this.dataBuf.clear()
   }
 
   // Diagnostic only (WS_PTY_DEBUG=1): append each chunk's app, current status,
@@ -471,7 +537,17 @@ export class PtyManager {
           if (app === null) {
             if (busy && m.status === 'idle') {
               this.setStatus(m, 'running')
-            } else if (!busy && m.status === 'running' && Date.now() - m.lastData > OUTPUT_IDLE_MS) {
+            } else if (
+              !busy &&
+              (m.status === 'running' || m.status === 'waiting') &&
+              Date.now() - m.lastData > OUTPUT_IDLE_MS
+            ) {
+              // Plain shells have no persistent agent, so 'waiting' must be
+              // demotable too. A real prompt (rm -i, npm y/n) keeps a live
+              // child → busy=true → left alone. A stale-tail false match (a
+              // WAIT phrase lingering in tailCarry after it scrolled off) has
+              // no child → busy=false → cleared here instead of sticking until
+              // the user types.
               this.setStatus(m, 'idle')
             }
           }
@@ -505,8 +581,15 @@ export class PtyManager {
 
   kill(id: string): void {
     const m = this.ptys.get(id)
-    if (!m) return
+    if (!m) {
+      // The backend may still be spawning (elevated create waiting on UAC).
+      // Flag it so create() kills the backend on arrival instead of adopting
+      // an orphan.
+      if (this.pendingCreates.has(id)) this.killedWhilePending.add(id)
+      return
+    }
     if (m.waitTimer) clearTimeout(m.waitTimer)
+    this.dataBuf.delete(id)
     try {
       m.backend.kill()
     } catch {
