@@ -19,10 +19,12 @@ export function initConfirmBridge(): void {
   initialized = true
   ipcMain.on('confirm:respond', (_e, id: unknown, ok: unknown) => {
     if (typeof id !== 'string') return
-    const resolve = pending.get(id)
-    if (!resolve) return
-    pending.delete(id)
-    resolve(ok === true)
+    // `settle` owns the delete (its guard is `pending.delete(id)`); deleting
+    // here first would make that guard fail and skip the resolve, leaving the
+    // requestConfirm promise pending forever (e.g. the quit flow never closes).
+    const settle = pending.get(id)
+    if (!settle) return
+    settle(ok === true)
   })
 }
 
