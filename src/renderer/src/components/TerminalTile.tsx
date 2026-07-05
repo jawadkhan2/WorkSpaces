@@ -24,10 +24,14 @@ interface Props {
 
 const STATUS_LABEL: Record<TerminalStatus, string> = {
   running: 'running',
-  waiting: 'needs you',
+  waiting: 'waiting for input',
   idle: 'idle',
   exited: 'stopped'
 }
+
+// Mirrors MAX_CLIPBOARD_TEXT in src/main/ipc.ts — clipboard writes larger
+// than this are rejected by the IPC handler, so don't send them.
+const MAX_CLIPBOARD_TEXT = 2 * 1024 * 1024
 
 const XTERM_THEME = {
   background: '#0a0e14',
@@ -133,7 +137,7 @@ export const TerminalTile: React.FC<Props> = ({
     // caused stale-clipboard pastes and double right-click pastes.
     const copySelection = (clearAfter: boolean): void => {
       const sel = xterm.getSelection()
-      if (!sel) return
+      if (!sel || sel.length > MAX_CLIPBOARD_TEXT) return
       window.api
         .clipboardWrite(sel)
         .then(() => {
@@ -143,6 +147,35 @@ export const TerminalTile: React.FC<Props> = ({
         })
         .catch(() => {})
     }
+
+    // A full-screen mouse app (Claude Code, vim, etc.) turns on mouse tracking
+    // and owns every click and its own selection: xterm's selection service is
+    // disabled while it's active, so getSelection() is always empty and the
+    // app instead ships copies out via OSC 52. When mouse mode is on we must
+    // step out of the way — let the app handle right-click paste itself and
+    // bridge its OSC 52 copies to the OS clipboard (below), rather than running
+    // our own Windows-Terminal-style copy/paste on top of it (double paste,
+    // empty copies).
+    const mouseAppActive = (): boolean => xterm.modes.mouseTrackingMode !== 'none'
+
+    // OSC 52: honor the terminal app's clipboard *writes* (copy) — this is the
+    // only path by which a selection made inside a mouse-tracking app reaches
+    // the OS clipboard. Reads/queries (`c;?`) are deliberately ignored so the
+    // PTY can never exfiltrate the user's clipboard back to itself.
+    const oscHandler = xterm.parser.registerOscHandler(52, (payload) => {
+      const b64 = payload.slice(payload.indexOf(';') + 1)
+      if (!b64 || b64 === '?') return true
+      let text: string
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+        text = new TextDecoder().decode(bytes)
+      } catch {
+        return true
+      }
+      if (text.length <= MAX_CLIPBOARD_TEXT) window.api.clipboardWrite(text).catch(() => {})
+      return true
+    })
+
     let pasteSeq = 0
     let lastPasteAt = 0
     const paste = (): void => {
@@ -186,9 +219,14 @@ export const TerminalTile: React.FC<Props> = ({
     })
 
     // Right-click: copy selection if any, else paste (Windows Terminal style).
+    // When a mouse-tracking app is running, the right-button press/release is
+    // already forwarded to the PTY and the app pastes on its own — so we only
+    // suppress the browser context menu and get out of the way, otherwise the
+    // clipboard lands twice.
     const onContextMenu = (e: MouseEvent): void => {
       e.preventDefault()
       e.stopPropagation()
+      if (mouseAppActive()) return
       if (xterm.hasSelection()) {
         copySelection(true)
       } else {
@@ -305,6 +343,7 @@ export const TerminalTile: React.FC<Props> = ({
     return () => {
       bodyEl.removeEventListener('contextmenu', onContextMenu)
       dprQuery?.removeEventListener('change', onDprChange)
+      oscHandler.dispose()
       linkProvider.dispose()
       ro.disconnect()
       disposeData()
@@ -330,7 +369,7 @@ export const TerminalTile: React.FC<Props> = ({
     <div
       className={`term${focused ? ' focused' : ''}${term.admin ? ' admin' : ''}${
         claudeLive ? ' claude-live' : ''
-      }${term.closing ? ' closing' : ''}`}
+      }${term.closing ? ' closing' : ''}${term.status === 'waiting' ? ' waiting' : ''}`}
       style={hidden ? { display: 'none' } : undefined}
       onMouseDown={onFocus}
     >

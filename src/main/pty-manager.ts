@@ -30,9 +30,19 @@ interface ManagedPty {
   // Whether the PTY's shell currently has a live descendant process (a
   // command like `npm run dev` is running inside it). Updated by the same
   // process-tree poll as app detection. While busy, silence between output
-  // bursts must not demote the status to "idle".
+  // bursts must not demote the status to "idle". Not used for terminals with
+  // a detected app (see lastAppSignal) — the agent process itself lives for
+  // the whole session, so its mere presence says nothing about whether it is
+  // currently working.
   busy: boolean
   waitTimer?: NodeJS.Timeout
+  // Last time a real "still working" or "waiting for you" content signal was
+  // seen in this app's output (as opposed to a content-free repaint like the
+  // blinking cursor). Only meaningful while `app` is set.
+  lastAppSignal: number
+  // Tail of the previous output chunk, carried forward so a WAIT/RUNNING
+  // pattern split across a chunk boundary is still matched.
+  tailCarry: string
 }
 
 interface ProcInfo {
@@ -95,22 +105,46 @@ const META_INPUT = /^(?:\x1b\[(?:I|O|<\d+;\d+;\d+[Mm]))+$/
 // as a repaint and does not promote the status to "running".
 const REPAINT_SUPPRESS_MS = 500
 
-// Prompt patterns that suggest an agent is waiting for the user.
+// Prompt patterns that suggest an agent is waiting for the user: permission
+// dialogs ("This command requires approval" / "Do you want to proceed?"),
+// numbered menus (`❯ 1. Yes`), and hard limits that block progress until the
+// user acts.
 const WAIT_PATTERNS = [
   /\[y\/n\]/i,
   /\(y\/n\)/i,
   /do you want/i,
   /press enter/i,
-  /continue\?/i
+  /continue\?/i,
+  /requires approval/i,
+  /esc to cancel/i,
+  /❯\s*\d\.\s/,
+  /usage limit/i,
+  /limit reached/i
 ]
 
-// A bare `❯` is also the prompt of common shells (Starship, oh-my-posh), so
-// it only counts as "waiting" when a known app is detected in the terminal.
-const APP_WAIT_PATTERNS = [/❯\s*$/]
+// Claude Code's own "still working" tell: a spinner glyph + whimsical verb
+// ("✶ Musing…", "✻ Leavening…", …) or the elapsed-time/token status line
+// ("(12s · ⇓ 340 tokens)"). This is the only reliable "actively working"
+// signal for a known app — plain output arriving is not enough, because
+// Claude repaints its blinking cursor (`\r●` / `\r `) roughly every 500ms
+// even while sitting fully idle at its own prompt.
+const APP_RUNNING_PATTERNS = [/[✻✽✢✳✶]\s*\w+ing…/, /\(\d+s\s*[·•]/]
 
 // After output goes quiet for this long, a terminal with no live child
 // process is considered idle again.
 const OUTPUT_IDLE_MS = 1500
+
+// How often the idle-vs-still-working sweep runs for terminals with a
+// detected app. Independent of appTimer (process-tree poll) since this only
+// compares timestamps and is cheap enough to run often.
+const APP_IDLE_SWEEP_MS = 500
+
+// How often the process-tree poll runs. Each tick launches powershell.exe and
+// enumerates every process via Win32_Process — one of the heavier WMI classes
+// — so the interval is kept conservative. App *detection* latency is covered
+// by the OSC-title fast path in onData, so this poll only needs to catch
+// process exits and plain-shell busy/idle transitions, which tolerate ~4s.
+const APP_POLL_MS = 4000
 
 // Descendants that exist as console plumbing, not user work.
 const PLUMBING_PROCS = /^(conhost\.exe|openconsole\.exe|winpty-agent\.exe)$/i
@@ -119,6 +153,7 @@ const PLUMBING_PROCS = /^(conhost\.exe|openconsole\.exe|winpty-agent\.exe)$/i
 export class PtyManager {
   private ptys = new Map<string, ManagedPty>()
   private appTimer: NodeJS.Timeout | null = null
+  private appIdleSweepTimer: NodeJS.Timeout | null = null
   private appPollBusy = false
 
   constructor(private getWindow: () => BrowserWindow | null) {}
@@ -138,9 +173,16 @@ export class PtyManager {
       // initial "running" flash the same way as resize repaints.
       lastResize: Date.now(),
       lastMetaInput: 0,
-      busy: false
+      busy: false,
+      lastAppSignal: 0,
+      tailCarry: ''
     }
     this.ptys.set(spec.id, managed)
+    // For elevated backends `create` awaited above, so these subscribe *after*
+    // the broker may have already emitted output — spawnElevatedPty buffers
+    // early data/exit into pendingData/pendingExit and flushes them the moment
+    // these callbacks attach, so nothing is dropped. Keep that buffer if you
+    // ever reorder this.
     backend.onData((data) => this.onData(spec.id, data))
     backend.onExit(() => this.onExit(spec.id))
     this.ensureAppPolling()
@@ -185,13 +227,6 @@ export class PtyManager {
     if (!managed) return
     const now = Date.now()
     managed.lastData = now
-    // Repaints caused by resizes or focus/mouse chatter must not flash the
-    // status to "running" (workspace switches, tile focus, hover, etc.).
-    const sinceRepaintTrigger =
-      now - Math.max(managed.lastResize, managed.lastMetaInput)
-    if (sinceRepaintTrigger > REPAINT_SUPPRESS_MS) {
-      this.setStatus(managed, 'running')
-    }
     this.getWindow()?.webContents.send(`pty:data:${id}`, data)
 
     // Fast path for app detection: programs that set the terminal title via
@@ -201,13 +236,36 @@ export class PtyManager {
     const title = /\x1b\][02];([^\x07\x1b]*)/.exec(data)?.[1]
     if (title && /claude/i.test(title)) this.setApp(managed, 'claude')
 
-    // Detect an "awaiting input" prompt shortly after output settles.
+    // Match against this chunk plus the tail of the previous one, so a pattern
+    // straddling the chunk boundary isn't missed. Bounded to the last 200 chars.
+    const tail = (managed.tailCarry + data).slice(-200)
+    managed.tailCarry = tail
+
+    if (managed.app !== null) {
+      // Known agents (Claude Code) repaint their idle prompt's blinking
+      // cursor forever, so "any output = running" and "reset the idle timer
+      // on any chunk" both misfire — a busy terminal would never go quiet.
+      // Only content that actually says "working" or "needs you" moves the
+      // status; a bare repaint is ignored entirely.
+      if (WAIT_PATTERNS.some((re) => re.test(tail))) {
+        managed.lastAppSignal = now
+        this.setStatus(managed, 'waiting')
+      } else if (APP_RUNNING_PATTERNS.some((re) => re.test(tail))) {
+        managed.lastAppSignal = now
+        this.setStatus(managed, 'running')
+      }
+      return
+    }
+
+    // Plain shells have no such protocol — fall back to "any real output
+    // (not a resize/focus repaint) means running", and demote to idle once
+    // output settles and no descendant process remains.
+    const sinceRepaintTrigger = now - Math.max(managed.lastResize, managed.lastMetaInput)
+    if (sinceRepaintTrigger > REPAINT_SUPPRESS_MS) {
+      this.setStatus(managed, 'running')
+    }
     if (managed.waitTimer) clearTimeout(managed.waitTimer)
-    const tail = data.slice(-200)
-    const waiting =
-      WAIT_PATTERNS.some((re) => re.test(tail)) ||
-      (managed.app !== null && APP_WAIT_PATTERNS.some((re) => re.test(tail)))
-    if (waiting) {
+    if (WAIT_PATTERNS.some((re) => re.test(tail))) {
       managed.waitTimer = setTimeout(() => this.setStatus(managed, 'waiting'), 400)
     } else {
       // Programs like dev servers emit output in bursts with long silences in
@@ -239,6 +297,9 @@ export class PtyManager {
   private setApp(m: ManagedPty, app: DetectedApp): void {
     if (m.app === app) return
     m.app = app
+    // Grace period before the idle sweep can act, so a just-detected app
+    // isn't immediately judged idle before its first real content signal.
+    if (app !== null) m.lastAppSignal = Date.now()
     this.getWindow()?.webContents.send('pty:app', { id: m.spec.id, app })
   }
 
@@ -246,13 +307,47 @@ export class PtyManager {
 
   private ensureAppPolling(): void {
     if (this.appTimer) return
-    this.appTimer = setInterval(() => this.pollApps(), 2500)
+    this.appTimer = setInterval(() => this.pollApps(), APP_POLL_MS)
+    this.appIdleSweepTimer = setInterval(() => this.sweepAppIdle(), APP_IDLE_SWEEP_MS)
   }
 
   private stopAppPollingIfIdle(): void {
     if (this.ptys.size === 0 && this.appTimer) {
       clearInterval(this.appTimer)
       this.appTimer = null
+      if (this.appIdleSweepTimer) clearInterval(this.appIdleSweepTimer)
+      this.appIdleSweepTimer = null
+    }
+  }
+
+  // Known-app terminals (Claude Code) never go quiet on their own — the
+  // blinking cursor repaints every ~500ms even at rest — so idle can't be
+  // driven by "no output for N ms". Instead: once a real working signal
+  // hasn't reappeared for OUTPUT_IDLE_MS, the terminal has settled.
+  //
+  // Only 'running' is swept. 'waiting' is left sticky: a permission prompt or
+  // menu matches a WAIT_PATTERN exactly once and then sits static on screen —
+  // only the cursor blink repaints, which doesn't re-emit the prompt text, so
+  // lastAppSignal never refreshes. Sweeping it would flip the "waiting for
+  // input" pill to idle after 1.5s while the user still hasn't answered. It
+  // clears on its own when real output supersedes it (running / exit).
+  private sweepAppIdle(): void {
+    if (this.ptys.size === 0) return
+    // Nothing to sweep unless at least one terminal has a detected app.
+    let hasApp = false
+    for (const m of this.ptys.values()) {
+      if (m.app !== null) {
+        hasApp = true
+        break
+      }
+    }
+    if (!hasApp) return
+    const now = Date.now()
+    for (const m of this.ptys.values()) {
+      if (m.app === null) continue
+      if (m.status === 'running' && now - m.lastAppSignal > OUTPUT_IDLE_MS) {
+        this.setStatus(m, 'idle')
+      }
     }
   }
 
@@ -287,13 +382,17 @@ export class PtyManager {
           const { app, busy } = detect(m.backend.pid)
           this.setApp(m, app)
           m.busy = busy
-          // Keep the status honest between output bursts: a busy shell stays
-          // "running" even while silent; a shell whose child just exited
-          // drops back to idle once its output has settled.
-          if (busy && m.status === 'idle') {
-            this.setStatus(m, 'running')
-          } else if (!busy && m.status === 'running' && Date.now() - m.lastData > OUTPUT_IDLE_MS) {
-            this.setStatus(m, 'idle')
+          // Busy-based promotion/demotion only applies to plain shells (no
+          // detected app): a dev server stays "running" while silent, and
+          // drops to idle once its output has settled and it has exited.
+          // Known apps are driven entirely by content signals (see onData /
+          // sweepAppIdle) since their process is alive for the whole session.
+          if (app === null) {
+            if (busy && m.status === 'idle') {
+              this.setStatus(m, 'running')
+            } else if (!busy && m.status === 'running' && Date.now() - m.lastData > OUTPUT_IDLE_MS) {
+              this.setStatus(m, 'idle')
+            }
           }
         }
       })

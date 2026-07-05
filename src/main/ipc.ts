@@ -141,6 +141,11 @@ function existingWorkspaceTarget(rawPath: string, root: string): string | null {
   }
 }
 
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  return Math.min(max, Math.max(min, Math.floor(value)))
+}
+
 function positiveInt(value: unknown, label: string, max: number): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
     fail(`Invalid ${label}`)
@@ -248,8 +253,10 @@ export function registerIpc(pty: PtyManager, getWindow: () => BrowserWindow | nu
     // drive-letter colon in the path and peels line/col off the end).
     const m = /^(.+):(\d+)(?::(\d+))?$/.exec(targetText)
     const rawPath = m ? m[1] : targetText
-    const line = m ? positiveInt(Number(m[2]), 'line', 1_000_000) : null
-    const col = m?.[3] ? positiveInt(Number(m[3]), 'column', 1_000_000) : null
+    // Clamp rather than reject: an out-of-range line/col shouldn't kill the
+    // whole link — open the file at the nearest valid position instead.
+    const line = m ? clampInt(Number(m[2]), 1, 1_000_000) : null
+    const col = m?.[3] ? clampInt(Number(m[3]), 1, 1_000_000) : null
     const abs = existingWorkspaceTarget(rawPath, workspaceRoot)
     if (!abs) return false
     if (line) {

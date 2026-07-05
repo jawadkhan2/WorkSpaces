@@ -14,6 +14,7 @@ import { ArrangeMenu } from './components/ArrangeMenu'
 import { NewTerminalMenu } from './components/NewTerminalMenu'
 import { TerminalGrid } from './components/TerminalGrid'
 import { SettingsModal } from './components/SettingsModal'
+import appIconUrl from './assets/app-icon.svg'
 
 const uuid = (): string =>
   typeof crypto?.randomUUID === 'function'
@@ -118,10 +119,13 @@ export default function App(): React.JSX.Element {
   }, [])
 
   const active = workspaces.find((w) => w.id === activeId) || null
-  const liveIds = useMemo(() => {
-    const s = new Set<string>()
+  // Per-workspace summary for the sidebar dot: "waiting" (an agent needs the
+  // user) always outranks "running", since it's the more actionable state.
+  const liveStatus = useMemo(() => {
+    const s = new Map<string, 'running' | 'waiting'>()
     for (const [wsId, list] of Object.entries(terminals)) {
-      if (list.some((t) => t.status === 'running' || t.status === 'waiting')) s.add(wsId)
+      if (list.some((t) => t.status === 'waiting')) s.set(wsId, 'waiting')
+      else if (list.some((t) => t.status === 'running')) s.set(wsId, 'running')
     }
     return s
   }, [terminals])
@@ -171,7 +175,11 @@ export default function App(): React.JSX.Element {
     })
     setWorkspaces((prev) => prev.filter((w) => w.id !== id))
     if (activeId === id) {
-      setActiveId(workspaces.find((w) => w.id !== id)?.id ?? null)
+      // Fall to the neighbour (previous, else next) rather than always the
+      // first workspace, so removal keeps focus near where the user was.
+      const idx = workspaces.findIndex((w) => w.id === id)
+      const neighbour = workspaces[idx - 1] ?? workspaces[idx + 1]
+      setActiveId(neighbour?.id ?? null)
     }
   }
 
@@ -309,12 +317,14 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  })
+    // Re-bind only when the state the handler reads actually changes, instead
+    // of re-registering the global listener on every render.
+  }, [active, focused, terminals])
 
   return (
     <div className="app" onClick={() => { setArrangeOpen(false); setNewMenuOpen(false) }}>
       <div className="titlebar">
-        <div className="logo-mark">W</div>
+        <img className="titlebar-icon" src={appIconUrl} alt="" aria-hidden="true" />
         <div className="app-name">
           Work<span>Spaces</span>
         </div>
@@ -324,7 +334,7 @@ export default function App(): React.JSX.Element {
         <Sidebar
           workspaces={workspaces}
           activeId={activeId}
-          liveIds={liveIds}
+          liveStatus={liveStatus}
           collapsed={sidebarCollapsed}
           onToggleCollapse={toggleSidebar}
           onSelect={setActiveId}

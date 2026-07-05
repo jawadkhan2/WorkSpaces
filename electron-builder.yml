@@ -16,7 +16,11 @@ files:
 npmRebuild: false
 asarUnpack:
   - node_modules/node-pty/**
+extraResources:
+  - from: build/icon.ico
+    to: icon.ico
 win:
+  icon: build/icon.ico
   target:
     - nsis
   executableName: WorkSpaces

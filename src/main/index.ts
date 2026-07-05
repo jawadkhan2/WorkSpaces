@@ -1,4 +1,5 @@
-import { app, shell, BrowserWindow, dialog } from 'electron'
+import { app, shell, BrowserWindow, dialog, screen } from 'electron'
+import { existsSync } from 'fs'
 import { join } from 'path'
 import { getStore } from './store'
 import { PtyManager } from './pty-manager'
@@ -33,19 +34,33 @@ function stopPtysForRendererRestart(): void {
   if (!isQuitting) ptyManager?.killAll()
 }
 
+function getAppIconPath(): string | undefined {
+  const candidates = [
+    join(process.resourcesPath, 'icon.ico'),
+    join(__dirname, '../../build/icon.ico'),
+    join(process.cwd(), 'build/icon.ico')
+  ]
+  return candidates.find((candidate) => existsSync(candidate))
+}
+
+// Native caption-button overlay (Windows/Linux). Height must match the CSS
+// .titlebar height in styles.css.
+const TITLE_BAR_OVERLAY = { color: '#010409', symbolColor: '#8b949e', height: 36 }
+
 function createWindow(): void {
+  const icon = getAppIconPath()
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 900,
     minHeight: 600,
     show: false,
+    ...(icon ? { icon } : {}),
     autoHideMenuBar: true,
     backgroundColor: '#0d1117',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    ...(process.platform !== 'darwin' && {
-      titleBarOverlay: { color: '#010409', symbolColor: '#8b949e', height: 36 }
-    }),
+    ...(process.platform !== 'darwin' && { titleBarOverlay: TITLE_BAR_OVERLAY }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -55,6 +70,28 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+
+  // Moving the window between monitors with different DPI scaling (2K <-> 4K)
+  // re-lays the native caption buttons at the new scale factor, but the overlay
+  // geometry set at creation goes stale — the titlebar's bottom edge gets
+  // clipped under the button strip. Re-apply the overlay whenever the effective
+  // scale factor changes to force Chromium to recompute it.
+  if (process.platform !== 'darwin') {
+    let lastScale = screen.getDisplayMatching(mainWindow.getBounds()).scaleFactor
+    const refitOverlay = (): void => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      const scale = screen.getDisplayMatching(mainWindow.getBounds()).scaleFactor
+      if (scale === lastScale) return
+      lastScale = scale
+      mainWindow.setTitleBarOverlay(TITLE_BAR_OVERLAY)
+    }
+    // 'moved' catches monitor hops; 'display-metrics-changed' catches a live
+    // DPI/resolution change on the display the window already sits on.
+    mainWindow.on('moved', refitOverlay)
+    const onMetrics = (): void => refitOverlay()
+    screen.on('display-metrics-changed', onMetrics)
+    mainWindow.on('closed', () => screen.removeListener('display-metrics-changed', onMetrics))
+  }
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     openExternalHttp(details.url)

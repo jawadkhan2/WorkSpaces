@@ -5,7 +5,7 @@ import { FolderIcon, GearIcon } from './icons'
 interface Props {
   workspaces: Workspace[]
   activeId: string | null
-  liveIds: Set<string>
+  liveStatus: Map<string, 'running' | 'waiting'>
   collapsed: boolean
   onToggleCollapse: () => void
   onSelect: (id: string) => void
@@ -18,7 +18,7 @@ interface Props {
 export const Sidebar: React.FC<Props> = ({
   workspaces,
   activeId,
-  liveIds,
+  liveStatus,
   collapsed,
   onToggleCollapse,
   onSelect,
@@ -73,7 +73,10 @@ export const Sidebar: React.FC<Props> = ({
             No workspaces yet. Click + to add a project folder.
           </div>
         )}
-        {workspaces.map((ws) => (
+        {workspaces.map((ws) => {
+          const status = liveStatus.get(ws.id)
+          const liveTitle = status === 'waiting' ? 'Waiting for you' : 'Agents running'
+          return (
           <div
             key={ws.id}
             className={`ws${ws.id === activeId ? ' active' : ''}`}
@@ -82,7 +85,12 @@ export const Sidebar: React.FC<Props> = ({
           >
             <FolderIcon className="folder" />
             {collapsed ? (
-              liveIds.has(ws.id) && <div className="live rail-live" title="Agents running" />
+              status && (
+                <div
+                  className={`live rail-live${status === 'waiting' ? ' waiting' : ''}`}
+                  title={liveTitle}
+                />
+              )
             ) : (
               <>
                 <div
@@ -104,7 +112,9 @@ export const Sidebar: React.FC<Props> = ({
                 >
                   {ws.name}
                 </div>
-                {liveIds.has(ws.id) && <div className="live" title="Agents running" />}
+                {status && (
+                  <div className={`live${status === 'waiting' ? ' waiting' : ''}`} title={liveTitle} />
+                )}
                 <button
                   className="rename"
                   title="Rename"
@@ -142,7 +152,8 @@ export const Sidebar: React.FC<Props> = ({
               </>
             )}
           </div>
-        ))}
+          )
+        })}
       </div>
 
       <div className="sidebar-foot">

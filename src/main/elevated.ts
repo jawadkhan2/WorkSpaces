@@ -90,6 +90,13 @@ export function spawnElevatedPty(opts: {
     )
 
     const server = net.createServer((conn) => {
+      // Any client that connects but never completes the token handshake is
+      // dropped quickly, so a stray local process can't hold pipe connections
+      // open until the full UAC timeout.
+      const authDeadline = setTimeout(() => {
+        if (conn !== sock) conn.destroy()
+      }, 5000)
+      conn.on('close', () => clearTimeout(authDeadline))
       let buf = ''
       conn.on('data', (chunk) => {
         buf += chunk.toString('utf-8')

@@ -7,3 +7,9 @@ release/
 .DS_Store
 .vite/
 .serena/
+
+# Local debug scratch (not part of the app)
+/decode.js
+/probe.js
+/plain-*.txt
+/icon-variants.html
