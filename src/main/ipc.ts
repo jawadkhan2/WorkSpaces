@@ -4,6 +4,7 @@ import { basename, isAbsolute, relative, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import { getStore } from './store'
 import { PtyManager } from './pty-manager'
+import { requestConfirm, externalLinkConfirm } from './confirm'
 import { LayoutMode, Settings, TerminalSpec, Workspace } from '../shared/types'
 
 const LAYOUTS = new Set<LayoutMode>(['auto', 'single', 'cols', 'rows', 'grid'])
@@ -240,10 +241,13 @@ export function registerIpc(pty: PtyManager, getWindow: () => BrowserWindow | nu
     clipboard.writeText(stringValue(text, 'clipboard text', MAX_CLIPBOARD_TEXT))
   )
 
-  // ---- Links (ctrl+click in terminals) ----
+  // ---- Links (left-click in terminals) ----
   ipcMain.handle('link:open', async (_e, target: unknown, cwd: unknown) => {
     const targetText = trimmedString(target, 'link target', MAX_LINK_TEXT)
     if (isHttpUrl(targetText)) {
+      // Confirm through the in-app modal before opening in the OS browser.
+      const ok = await requestConfirm(getWindow(), externalLinkConfirm(targetText))
+      if (!ok) return false
       await shell.openExternal(targetText)
       return true
     }

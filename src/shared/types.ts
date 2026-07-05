@@ -47,6 +47,22 @@ export interface UpdateState {
   error?: string
 }
 
+/**
+ * Options for the app's custom confirmation modal. Shared so the main process
+ * can request the same in-app dialog the renderer uses (no native popups).
+ */
+export interface ConfirmOptions {
+  title: string
+  /** Body text; '\n' renders as separate lines. */
+  message?: string
+  confirmLabel?: string
+  cancelLabel?: string
+  /** Red confirm button for destructive/irreversible actions. */
+  danger?: boolean
+  /** Emoji glyph shown beside the title (e.g. '⚠', '🔗', '🛡'). */
+  icon?: string
+}
+
 export interface AgentPreset {
   kind: TerminalKind
   title: string

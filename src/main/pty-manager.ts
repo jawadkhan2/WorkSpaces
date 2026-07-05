@@ -1,5 +1,8 @@
 import { BrowserWindow } from 'electron'
 import { execFile } from 'child_process'
+import { appendFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import * as pty from 'node-pty'
 import { DetectedApp, TerminalSpec, TerminalStatus } from '../shared/types'
 import { fallbackCwd, resolveSpawn } from './spawn'
@@ -112,23 +115,68 @@ const REPAINT_SUPPRESS_MS = 500
 const WAIT_PATTERNS = [
   /\[y\/n\]/i,
   /\(y\/n\)/i,
+  /\by\/n\b/i,
   /do you want/i,
+  /would you like/i,
   /press enter/i,
   /continue\?/i,
+  /proceed\?/i,
   /requires approval/i,
   /esc to cancel/i,
-  /❯\s*\d\.\s/,
+  // Numbered selection menu (Claude's permission prompts): "❯ 1. Yes". After
+  // ANSI stripping the highlighted digit sits right after the arrow.
+  /❯\s*\d[.)]/,
   /usage limit/i,
   /limit reached/i
 ]
 
-// Claude Code's own "still working" tell: a spinner glyph + whimsical verb
-// ("✶ Musing…", "✻ Leavening…", …) or the elapsed-time/token status line
-// ("(12s · ⇓ 340 tokens)"). This is the only reliable "actively working"
-// signal for a known app — plain output arriving is not enough, because
-// Claude repaints its blinking cursor (`\r●` / `\r `) roughly every 500ms
-// even while sitting fully idle at its own prompt.
-const APP_RUNNING_PATTERNS = [/[✻✽✢✳✶]\s*\w+ing…/, /\(\d+s\s*[·•]/]
+// Claude Code's own "still working" tells. Any one of these means the agent
+// is actively working — plain output arriving is not enough, because Claude
+// repaints its blinking cursor (`\r●` / `\r `) roughly every 500ms even while
+// sitting fully idle at its own prompt.
+//   1. "esc to interrupt" — the interrupt hint printed in every frame of the
+//      working status line, and absent when idle or waiting. Most stable
+//      signal, so it leads. (The waiting state's hint is "esc to cancel",
+//      matched by WAIT_PATTERNS, which is checked first.)
+//   2. spinner glyph + whimsical verb ("✶ Musing…", "✻ Leavening…"). Verb may
+//      end in a unicode ellipsis (…) or three ASCII dots (...).
+//   3. the elapsed-time status line ("(12s · ⇓ 340 tokens)").
+const APP_RUNNING_PATTERNS = [
+  /esc to interrupt/i,
+  /[✻✽✢✳✶✷·∗*]\s*\w+ing(?:…|\.\.\.)/,
+  /\(\s*\d+s\b/
+]
+
+// Strip ANSI escape sequences (CSI/OSC/charset/single-char) and stray control
+// bytes so text matching runs against what the user actually sees. Claude
+// Code's Ink TUI interleaves SGR color codes mid-phrase — matching the raw
+// stream would miss "esc to interrupt" or a "❯ 1." menu whenever a color code
+// lands between the characters. Spaces/newlines are kept for phrase matching.
+// eslint-disable-next-line no-control-regex
+const ANSI_SEQ = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[()#][0-9A-Za-z]|\x1b[=>MENOPc78]/g
+// eslint-disable-next-line no-control-regex
+const CTRL_CH = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
+
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_SEQ, '').replace(/\r/g, '').replace(CTRL_CH, '')
+}
+
+// Printable, non-whitespace character count of a chunk after stripping control
+// codes — a proxy for "real screen activity". A working agent's status line
+// (spinner + verb + token counter) clears this easily every frame; an idle or
+// waiting prompt only blinks the cursor (`\r●` / `\r `), leaving ~0–1 chars.
+function meaningfulLen(data: string): number {
+  return stripAnsi(data).replace(/\s+/g, '').length
+}
+
+// Minimum meaningfulLen for an output chunk to count as active work (and thus
+// keep a known app's status "running"). Above a bare cursor blink, below a
+// real content redraw.
+const APP_CONTENT_MIN = 3
+
+// Set WS_PTY_DEBUG=1 to append raw + stripped PTY output to a log file, so the
+// exact bytes behind a missed status transition can be inspected.
+const DEBUG_CAPTURE = !!process.env.WS_PTY_DEBUG
 
 // After output goes quiet for this long, a terminal with no live child
 // process is considered idle again.
@@ -236,21 +284,33 @@ export class PtyManager {
     const title = /\x1b\][02];([^\x07\x1b]*)/.exec(data)?.[1]
     if (title && /claude/i.test(title)) this.setApp(managed, 'claude')
 
-    // Match against this chunk plus the tail of the previous one, so a pattern
-    // straddling the chunk boundary isn't missed. Bounded to the last 200 chars.
-    const tail = (managed.tailCarry + data).slice(-200)
-    managed.tailCarry = tail
+    // Carry the raw tail across chunks so a pattern straddling a chunk
+    // boundary still matches, then strip ANSI for the actual text matching
+    // (see stripAnsi). Kept wider than the visible window because escape codes
+    // inflate the raw length. Match against the stripped text.
+    const rawTail = (managed.tailCarry + data).slice(-400)
+    managed.tailCarry = rawTail
+    const tail = stripAnsi(rawTail)
+
+    if (DEBUG_CAPTURE) this.debugCapture(id, managed, data, tail)
 
     if (managed.app !== null) {
-      // Known agents (Claude Code) repaint their idle prompt's blinking
-      // cursor forever, so "any output = running" and "reset the idle timer
-      // on any chunk" both misfire — a busy terminal would never go quiet.
-      // Only content that actually says "working" or "needs you" moves the
-      // status; a bare repaint is ignored entirely.
+      // Known agents (Claude Code) repaint their idle prompt's blinking cursor
+      // forever, so "any output = running" would never let a busy terminal go
+      // quiet. Instead:
+      //   - a WAIT phrase → waiting (checked first; it outranks activity so a
+      //     freshly drawn permission prompt doesn't read as "working"),
+      //   - otherwise a real content redraw (spinner/token stream, or an
+      //     explicit running phrase) → running. A bare cursor-blink repaint
+      //     falls under APP_CONTENT_MIN and is ignored, so the sweep can
+      //     demote to idle once work actually stops.
       if (WAIT_PATTERNS.some((re) => re.test(tail))) {
         managed.lastAppSignal = now
         this.setStatus(managed, 'waiting')
-      } else if (APP_RUNNING_PATTERNS.some((re) => re.test(tail))) {
+      } else if (
+        meaningfulLen(data) >= APP_CONTENT_MIN ||
+        APP_RUNNING_PATTERNS.some((re) => re.test(tail))
+      ) {
         managed.lastAppSignal = now
         this.setStatus(managed, 'running')
       }
@@ -286,6 +346,27 @@ export class PtyManager {
     this.getWindow()?.webContents.send(`pty:exit:${id}`)
     this.ptys.delete(id)
     this.stopAppPollingIfIdle()
+  }
+
+  // Diagnostic only (WS_PTY_DEBUG=1): append each chunk's app, current status,
+  // meaningful length, and both raw + stripped text to a log so the exact
+  // bytes behind a missed running/waiting transition can be inspected.
+  private debugCapture(id: string, m: ManagedPty, data: string, tail: string): void {
+    try {
+      const line =
+        JSON.stringify({
+          t: new Date().toISOString(),
+          id: id.slice(0, 8),
+          app: m.app,
+          status: m.status,
+          len: meaningfulLen(data),
+          raw: data.slice(-200),
+          tail: tail.slice(-200)
+        }) + '\n'
+      appendFileSync(join(tmpdir(), 'workspaces-pty-debug.log'), line)
+    } catch {
+      /* diagnostics must never break the data path */
+    }
   }
 
   private setStatus(m: ManagedPty, status: TerminalStatus): void {

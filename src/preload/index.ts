@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
+  ConfirmOptions,
   DetectedApp,
   LayoutMode,
   Settings,
@@ -33,7 +34,7 @@ const api = {
   clipboardRead: (): Promise<string> => ipcRenderer.invoke('clipboard:read'),
   clipboardWrite: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write', text),
 
-  // Ctrl+click links: web URLs or file paths (resolved against cwd)
+  // Left-click links: web URLs or file paths (resolved against cwd)
   openLink: (target: string, cwd: string): Promise<boolean> =>
     ipcRenderer.invoke('link:open', target, cwd),
 
@@ -47,6 +48,19 @@ const api = {
     ipcRenderer.on('updater:state', listener)
     return () => ipcRenderer.removeListener('updater:state', listener)
   },
+
+  // Custom confirmation modal requested by the main process (quit, restart to
+  // update, external links). The renderer shows its in-app dialog and replies
+  // with the user's choice — no native OS dialogs.
+  onConfirmRequest: (
+    cb: (id: string, opts: ConfirmOptions) => void
+  ): (() => void) => {
+    const listener = (_e: unknown, id: string, opts: ConfirmOptions): void => cb(id, opts)
+    ipcRenderer.on('confirm:request', listener)
+    return () => ipcRenderer.removeListener('confirm:request', listener)
+  },
+  respondConfirm: (id: string, ok: boolean): void =>
+    ipcRenderer.send('confirm:respond', id, ok),
 
   // Fired in the surviving instance when a second app launch was blocked.
   onSecondInstance: (cb: () => void): (() => void) => {

@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, dialog, screen } from 'electron'
+import { app, shell, BrowserWindow, screen } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { getStore } from './store'
@@ -6,6 +6,7 @@ import { PtyManager } from './pty-manager'
 import { registerIpc } from './ipc'
 import { runBroker } from './broker'
 import { initUpdater } from './updater'
+import { initConfirmBridge, requestConfirm, externalLinkConfirm } from './confirm'
 
 // Elevated PTY broker mode (PLAN.md §6): a second, UAC-elevated instance of
 // this app launched with --pty-broker. It hosts one terminal's node-pty and
@@ -25,9 +26,13 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+// Confirm through the in-app modal before handing an external link to the OS
+// browser — never open silently, never use a native dialog.
 function openExternalHttp(value: string): void {
   if (!isHttpUrl(value)) return
-  shell.openExternal(value).catch(() => {})
+  requestConfirm(mainWindow, externalLinkConfirm(value)).then((ok) => {
+    if (ok) shell.openExternal(value).catch(() => {})
+  })
 }
 
 function stopPtysForRendererRestart(): void {
@@ -125,20 +130,19 @@ function createWindow(): void {
       return
     }
     e.preventDefault()
-    const choice = dialog.showMessageBoxSync(mainWindow!, {
-      type: 'warning',
-      buttons: ['Quit', 'Cancel'],
-      defaultId: 1,
-      cancelId: 1,
+    requestConfirm(mainWindow, {
       title: 'Quit WorkSpaces?',
-      message: 'Quit WorkSpaces?',
-      detail: 'All running terminals and agents will be stopped.'
-    })
-    if (choice === 0) {
+      message: 'All running terminals and agents will be stopped.',
+      confirmLabel: 'Quit',
+      cancelLabel: 'Cancel',
+      danger: true,
+      icon: '⚠'
+    }).then((ok) => {
+      if (!ok) return
       isQuitting = true
       ptyManager?.killAll()
       mainWindow?.close()
-    }
+    })
   })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -152,12 +156,11 @@ if (IS_BROKER) {
   app.disableHardwareAcceleration()
   runBroker()
 } else if (!app.requestSingleInstanceLock()) {
-  // Another WorkSpaces window is already open — tell the user and bail.
+  // Another WorkSpaces window is already open — bail silently. This second
+  // process has no window to host our custom modal, and using a native dialog
+  // is exactly what we avoid; the surviving instance surfaces itself and shows
+  // an in-app toast via the 'second-instance' handler below.
   // (Broker instances above never take the lock, so elevation still works.)
-  dialog.showErrorBox(
-    'WorkSpaces is already running',
-    'Another instance of WorkSpaces is already open — switching to it.\n\nOnly one instance can run at a time.'
-  )
   app.quit()
 } else {
   // A second launch attempt lands here in the surviving instance: surface the
@@ -171,6 +174,7 @@ if (IS_BROKER) {
   })
 
   app.whenReady().then(() => {
+    initConfirmBridge()
     ptyManager = new PtyManager(() => mainWindow)
     registerIpc(ptyManager, () => mainWindow)
     createWindow()

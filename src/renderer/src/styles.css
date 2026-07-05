@@ -391,7 +391,31 @@ body {
   border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
 }
 .modal-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.modal-actions button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .modal-actions button.danger { background: var(--red); border-color: var(--red); color: #fff; }
+.modal-actions button.danger:hover { filter: brightness(1.1); }
+.modal-actions button:hover { border-color: var(--accent); }
+
+/* ---------- Custom confirmation modal ---------- */
+.confirm-modal { width: 400px; }
+.confirm-head { display: flex; align-items: center; gap: 12px; }
+.confirm-head h3 { margin-bottom: 0; }
+.confirm-icon {
+  width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 18px;
+  background: var(--panel-2); border: 1px solid var(--border);
+}
+.confirm-icon.danger {
+  background: rgba(248, 81, 73, 0.14); border-color: rgba(248, 81, 73, 0.4);
+}
+.confirm-body { margin-top: 14px; }
+.confirm-body p {
+  font-size: 13px; color: var(--text-dim); line-height: 1.5; margin: 0;
+}
+.confirm-body p + p { margin-top: 4px; }
+.confirm-modal .modal-actions button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 
 /* ---------- Toasts ---------- */
 .toasts {

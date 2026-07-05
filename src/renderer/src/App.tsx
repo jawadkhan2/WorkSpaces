@@ -14,6 +14,7 @@ import { ArrangeMenu } from './components/ArrangeMenu'
 import { NewTerminalMenu } from './components/NewTerminalMenu'
 import { TerminalGrid } from './components/TerminalGrid'
 import { SettingsModal } from './components/SettingsModal'
+import { useConfirm } from './hooks/useConfirm'
 import appIconUrl from './assets/app-icon.svg'
 
 const uuid = (): string =>
@@ -36,10 +37,13 @@ export default function App(): React.JSX.Element {
   const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([])
   const [appVersion, setAppVersion] = useState('')
   const [updateState, setUpdateState] = useState<UpdateState>({ phase: 'idle' })
+  const { confirm, confirmNode } = useConfirm()
 
   const started = useRef<Set<string>>(new Set())
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  const confirmRef = useRef(confirm)
+  confirmRef.current = confirm
 
   const pushToast = (msg: string): void => {
     const id = uuid()
@@ -88,6 +92,14 @@ export default function App(): React.JSX.Element {
       pushToast('WorkSpaces is already running — the second launch was blocked.')
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // The main process (quit, restart-to-update, external links) asks the
+  // renderer to show its custom modal instead of a native OS dialog.
+  useEffect(() => {
+    return window.api.onConfirmRequest((id, opts) => {
+      confirmRef.current(opts).then((ok) => window.api.respondConfirm(id, ok))
+    })
   }, [])
 
   // Status stream.
@@ -148,15 +160,20 @@ export default function App(): React.JSX.Element {
     setWorkspaces((prev) => prev.map((w) => (w.id === id ? { ...w, name } : w)))
   }
 
-  const removeWorkspace = (id: string): void => {
+  const removeWorkspace = async (id: string): Promise<void> => {
     const ws = workspaces.find((w) => w.id === id)
     if (!ws) return
     const live = terminals[id]?.length || 0
-    const ok = window.confirm(
-      `Remove workspace "${ws.name}"?` +
-        (live ? '\nIts terminals will be stopped.' : '') +
-        '\nThe folder on disk is not touched.'
-    )
+    const ok = await confirm({
+      title: `Remove workspace “${ws.name}”?`,
+      message:
+        (live ? 'Its terminals will be stopped.\n' : '') +
+        'The folder on disk is not touched.',
+      confirmLabel: 'Remove',
+      cancelLabel: 'Cancel',
+      danger: true,
+      icon: '🗑'
+    })
     if (!ok) return
     for (const t of terminals[id] || []) {
       window.api.killPty(t.id)
@@ -242,14 +259,31 @@ export default function App(): React.JSX.Element {
 
   // Real elevation can't be applied to a running process — the terminal is
   // restarted through the UAC broker (or back to a normal shell).
-  const toggleAdmin = (id: string): void => {
+  const toggleAdmin = async (id: string): Promise<void> => {
     if (!active) return
     const t = (terminals[active.id] || []).find((x) => x.id === id)
     if (!t) return
-    const msg = t.admin
-      ? 'Restart this terminal without administrator rights?\nThe current session will be replaced.'
-      : 'Restart this terminal as Administrator?\nWindows will show a UAC prompt, and the current session will be replaced.'
-    if (!window.confirm(msg)) return
+    const ok = await confirm(
+      t.admin
+        ? {
+            title: 'Drop administrator rights?',
+            message:
+              'This terminal will restart without admin rights. The current session will be replaced.',
+            confirmLabel: 'Restart',
+            cancelLabel: 'Cancel',
+            icon: '🛡'
+          }
+        : {
+            title: 'Run terminal as Administrator?',
+            message:
+              'Windows will show a UAC prompt, and the current session will be replaced.',
+            confirmLabel: 'Restart as admin',
+            cancelLabel: 'Cancel',
+            danger: true,
+            icon: '🛡'
+          }
+    )
+    if (!ok) return
     window.api.killPty(id)
     started.current.delete(id)
     const fresh: RuntimeTerminal = { ...t, id: uuid(), admin: !t.admin, status: 'idle', app: null }
@@ -431,6 +465,8 @@ export default function App(): React.JSX.Element {
           onClose={() => setShowSettings(false)}
         />
       )}
+
+      {confirmNode}
 
       {toasts.length > 0 && (
         <div className="toasts">

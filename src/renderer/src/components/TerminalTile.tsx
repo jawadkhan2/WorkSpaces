@@ -148,16 +148,6 @@ export const TerminalTile: React.FC<Props> = ({
         .catch(() => {})
     }
 
-    // A full-screen mouse app (Claude Code, vim, etc.) turns on mouse tracking
-    // and owns every click and its own selection: xterm's selection service is
-    // disabled while it's active, so getSelection() is always empty and the
-    // app instead ships copies out via OSC 52. When mouse mode is on we must
-    // step out of the way — let the app handle right-click paste itself and
-    // bridge its OSC 52 copies to the OS clipboard (below), rather than running
-    // our own Windows-Terminal-style copy/paste on top of it (double paste,
-    // empty copies).
-    const mouseAppActive = (): boolean => xterm.modes.mouseTrackingMode !== 'none'
-
     // OSC 52: honor the terminal app's clipboard *writes* (copy) — this is the
     // only path by which a selection made inside a mouse-tracking app reaches
     // the OS clipboard. Reads/queries (`c;?`) are deliberately ignored so the
@@ -218,15 +208,27 @@ export const TerminalTile: React.FC<Props> = ({
       return true
     })
 
-    // Right-click: copy selection if any, else paste (Windows Terminal style).
-    // When a mouse-tracking app is running, the right-button press/release is
-    // already forwarded to the PTY and the app pastes on its own — so we only
-    // suppress the browser context menu and get out of the way, otherwise the
-    // clipboard lands twice.
+    // Right-click: copy selection if any, else paste (Windows Terminal style) —
+    // our own main-process clipboardRead + bracketed xterm.paste, which is
+    // instant. A mouse-tracking app (Claude Code, vim) would otherwise receive
+    // the right-button press/release as a mouse report and run its own — slow,
+    // and on Windows unreliable — clipboard paste, competing with ours (double
+    // paste). Swallow the right button in the capture phase so xterm never
+    // forwards it to the app, then always do our fast paste below.
+    const swallowRightButton = (e: MouseEvent): void => {
+      if (e.button !== 2) return
+      // Keep the tile's focus tracking working (the outer div's mousedown, our
+      // stopped propagation would skip) and stop xterm from shipping the click
+      // to the PTY as a mouse report.
+      onFocus()
+      e.stopImmediatePropagation()
+    }
+    bodyRef.current.addEventListener('mousedown', swallowRightButton, true)
+    bodyRef.current.addEventListener('mouseup', swallowRightButton, true)
+
     const onContextMenu = (e: MouseEvent): void => {
       e.preventDefault()
       e.stopPropagation()
-      if (mouseAppActive()) return
       if (xterm.hasSelection()) {
         copySelection(true)
       } else {
@@ -237,14 +239,14 @@ export const TerminalTile: React.FC<Props> = ({
     }
     bodyRef.current.addEventListener('contextmenu', onContextMenu)
 
-    // Ctrl+click opens web links in the browser.
+    // Left-click opens web links in the browser.
     xterm.loadAddon(
-      new WebLinksAddon((event: MouseEvent, uri: string) => {
-        if (event.ctrlKey) window.api.openLink(uri, cwd)
+      new WebLinksAddon((_event: MouseEvent, uri: string) => {
+        window.api.openLink(uri, cwd)
       })
     )
 
-    // Ctrl+click opens file paths (absolute or cwd-relative, optional
+    // Left-click opens file paths (absolute or cwd-relative, optional
     // :line[:col] suffix, e.g. src\main\index.ts:42) in the editor.
     const FILE_LINK_RE = /(?:[A-Za-z]:[\\/]|\.{1,2}[\\/])?[\w.-]+(?:[\\/][\w.-]+)+(?::\d+(?::\d+)?)?/g
     const linkProvider = xterm.registerLinkProvider({
@@ -257,16 +259,18 @@ export const TerminalTile: React.FC<Props> = ({
         FILE_LINK_RE.lastIndex = 0
         while ((m = FILE_LINK_RE.exec(text))) {
           const target = m[0]
-          // URLs belong to the web-links addon.
-          if (target.includes('://')) continue
+          // URLs belong to the web-links addon. The match is only the domain
+          // tail (`example.com/path`), so the `://` sits just before it — check
+          // the preceding text, not the match, or we'd hijack every URL.
+          if (target.includes('://') || text.slice(0, m.index).endsWith('://')) continue
           links.push({
             range: {
               start: { x: m.index + 1, y },
               end: { x: m.index + target.length, y }
             },
             text: target,
-            activate: (ev) => {
-              if (ev.ctrlKey) window.api.openLink(target, cwd)
+            activate: () => {
+              window.api.openLink(target, cwd)
             }
           })
         }
@@ -342,6 +346,8 @@ export const TerminalTile: React.FC<Props> = ({
 
     return () => {
       bodyEl.removeEventListener('contextmenu', onContextMenu)
+      bodyEl.removeEventListener('mousedown', swallowRightButton, true)
+      bodyEl.removeEventListener('mouseup', swallowRightButton, true)
       dprQuery?.removeEventListener('change', onDprChange)
       oscHandler.dispose()
       linkProvider.dispose()

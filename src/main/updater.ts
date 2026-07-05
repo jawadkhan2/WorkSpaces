@@ -1,6 +1,7 @@
-import { app, dialog, ipcMain, BrowserWindow } from 'electron'
+import { app, ipcMain, BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { UpdateState } from '../shared/types'
+import { requestConfirm } from './confirm'
 
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000 // 4 hours
 
@@ -31,23 +32,21 @@ export function initUpdater(getWindow: () => BrowserWindow | null, hooks: Update
     autoUpdater.checkForUpdates().catch(() => {})
   })
 
-  ipcMain.handle('updater:install', () => {
+  ipcMain.handle('updater:install', async () => {
     if (state.phase !== 'downloaded') return
     // Restarting to update tears down every terminal — if any are still
     // alive, make that explicit instead of silently killing agent sessions.
     if (hooks.hasLiveTerminals()) {
-      const win = getWindow()
-      const choice = dialog.showMessageBoxSync(win!, {
-        type: 'warning',
-        buttons: ['Restart & update', 'Not now'],
-        defaultId: 1,
-        cancelId: 1,
+      const ok = await requestConfirm(getWindow(), {
         title: 'Restart to update?',
-        message: 'Terminals are still running',
-        detail:
-          'Restarting to apply the update will stop all running terminals and agents. Update now?'
+        message:
+          'Restarting to apply the update will stop all running terminals and agents. Update now?',
+        confirmLabel: 'Restart & update',
+        cancelLabel: 'Not now',
+        danger: true,
+        icon: '⚠'
       })
-      if (choice !== 0) return
+      if (!ok) return
     }
     hooks.prepareQuit()
     autoUpdater.quitAndInstall()
