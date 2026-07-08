@@ -411,6 +411,7 @@ body {
 .confirm-body { margin-top: 14px; }
 .confirm-body p {
   font-size: 13px; color: var(--text-dim); line-height: 1.5; margin: 0;
+  overflow-wrap: anywhere; word-break: break-word;
 }
 .confirm-body p + p { margin-top: 4px; }
 .confirm-modal .modal-actions button:focus-visible {

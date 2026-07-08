@@ -269,6 +269,18 @@ export const TerminalTile: React.FC<Props> = React.memo(function TerminalTile({
           // tail (`example.com/path`), so the `://` sits just before it — check
           // the preceding text, not the match, or we'd hijack every URL.
           if (target.includes('://') || text.slice(0, m.index).endsWith('://')) continue
+          // The regex matches any `word/word`, which snags prose like
+          // "America/Chicago" or "and/or" — those underline but open nothing.
+          // Require a real path signal: a drive/`./`/`../` prefix, a backslash
+          // separator, a `:line[:col]` suffix, or a file extension.
+          const bare = target.replace(/:\d+(?::\d+)?$/, '')
+          const lastSeg = bare.split(/[\\/]/).pop() ?? ''
+          const looksLikePath =
+            /^(?:[A-Za-z]:[\\/]|\.{1,2}[\\/])/.test(target) ||
+            target.includes('\\') ||
+            /:\d+(?::\d+)?$/.test(target) ||
+            /\.[A-Za-z0-9]{1,8}$/.test(lastSeg)
+          if (!looksLikePath) continue
           links.push({
             range: {
               start: { x: m.index + 1, y },

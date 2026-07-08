@@ -75,6 +75,13 @@ const api = {
     return () => ipcRenderer.removeListener('app:second-instance', listener)
   },
 
+  // Fired at startup when PTYs orphaned by a prior force-kill were reaped.
+  onOrphansCleaned: (cb: (count: number) => void): (() => void) => {
+    const listener = (_e: unknown, count: number): void => cb(count)
+    ipcRenderer.on('app:orphans-cleaned', listener)
+    return () => ipcRenderer.removeListener('app:orphans-cleaned', listener)
+  },
+
   // PTY
   createPty: (spec: TerminalSpec, cwd: string): Promise<{ id: string; pid: number }> =>
     ipcRenderer.invoke('pty:create', spec, cwd),

@@ -7,6 +7,7 @@ import * as pty from 'node-pty'
 import { DetectedApp, TerminalSpec, TerminalStatus } from '../shared/types'
 import { fallbackCwd, resolveSpawn } from './spawn'
 import { spawnElevatedPty } from './elevated'
+import { forgetPty, nameFor, recordPty } from './pty-registry'
 
 // Uniform backend shape so local node-pty and elevated broker ptys are
 // indistinguishable to the rest of the app.
@@ -101,10 +102,12 @@ function listProcesses(): Promise<ProcInfo[]> {
   })
 }
 
-// Input that is pure terminal chatter — focus in/out reports (CSI I / CSI O)
-// and SGR mouse events — as opposed to actual keystrokes. Apps like Claude
-// Code repaint in response to these; that repaint is not "running".
-const META_INPUT = /^(?:\x1b\[(?:I|O|<\d+;\d+;\d+[Mm]))+$/
+// Input that is pure terminal chatter — focus in/out reports (CSI I / CSI O),
+// SGR mouse events (including scroll wheel), and xterm's automatic replies to
+// app queries (cursor position report `CSI r;cR`, device attributes
+// `CSI ?…c`) — as opposed to actual keystrokes. Apps like Claude Code repaint
+// in response to these; that repaint is not "running".
+const META_INPUT = /^(?:\x1b\[(?:I|O|<\d+;\d+;\d+[Mm]|\d+;\d+R|\?\d+(?:;\d+)*c))+$/
 
 // Output arriving within this window after a resize or meta input is treated
 // as a repaint and does not promote the status to "running".
@@ -184,6 +187,14 @@ const DEBUG_CAPTURE = !!process.env.WS_PTY_DEBUG
 // process is considered idle again.
 const OUTPUT_IDLE_MS = 1500
 
+// Demote window for terminals with a detected app. Deliberately much wider
+// than OUTPUT_IDLE_MS: while Claude Code thinks for a long stretch its frame
+// updates can shrink to a cursor move + spinner glyph (below APP_CONTENT_MIN,
+// and with escape codes displacing "esc to interrupt" out of the tail
+// window), so qualifying signals can gap for a few seconds mid-work. A late
+// idle pill beats a green dot that blinks off and on during a long task.
+const APP_IDLE_MS = 4000
+
 // How often the idle-vs-still-working sweep runs for terminals with a
 // detected app. Independent of appTimer (process-tree poll) since this only
 // compares timestamps and is cheap enough to run often.
@@ -257,6 +268,10 @@ export class PtyManager {
       tailCarry: ''
     }
     this.ptys.set(spec.id, managed)
+    // Persist the OS pid so a force-kill of this app (which skips killAll)
+    // leaves a trail the next launch can reap. The shell image name guards
+    // against pid reuse in the meantime.
+    recordPty(backend.pid, nameFor(resolveSpawn(spec.command).shell))
     // For elevated backends `create` awaited above, so these subscribe *after*
     // the broker may have already emitted output — spawnElevatedPty buffers
     // early data/exit into pendingData/pendingExit and flushes them the moment
@@ -325,6 +340,9 @@ export class PtyManager {
 
     if (DEBUG_CAPTURE) this.debugCapture(id, managed, data, tail)
 
+    const sinceRepaintTrigger = now - Math.max(managed.lastResize, managed.lastMetaInput)
+    const repaintSuppressed = sinceRepaintTrigger <= REPAINT_SUPPRESS_MS
+
     if (managed.app !== null) {
       // Known agents (Claude Code) repaint their idle prompt's blinking cursor
       // forever, so "any output = running" would never let a busy terminal go
@@ -335,9 +353,25 @@ export class PtyManager {
       //     explicit running phrase) → running. A bare cursor-blink repaint
       //     falls under APP_CONTENT_MIN and is ignored, so the sweep can
       //     demote to idle once work actually stops.
-      if (WAIT_PATTERNS.some((re) => re.test(tail))) {
+      //
+      // Output inside the repaint-suppress window (scroll wheel mouse reports,
+      // focus events, resizes — Claude Code tracks the mouse, so every scroll
+      // tick makes it redraw the screen) is a repaint of existing content, not
+      // work: it must not flip an idle terminal to running or resurrect stale
+      // WAIT phrases scrolling back into view. The one exemption is "esc to
+      // interrupt": it is only ever painted while the agent is genuinely
+      // working, so it keeps the dot lit when the user scrolls *during* a task
+      // (the suppressed repaints would otherwise starve the idle sweep). WAIT
+      // still outranks it — a freshly drawn permission prompt can have the
+      // previous working frame's "esc to interrupt" lingering in tailCarry.
+      if (!repaintSuppressed && WAIT_PATTERNS.some((re) => re.test(tail))) {
         managed.lastAppSignal = now
         this.setStatus(managed, 'waiting')
+      } else if (/esc to interrupt/i.test(tail)) {
+        managed.lastAppSignal = now
+        this.setStatus(managed, 'running')
+      } else if (repaintSuppressed) {
+        // Repaint — leave status and lastAppSignal alone.
       } else if (
         meaningfulLen(data) >= APP_CONTENT_MIN ||
         APP_RUNNING_PATTERNS.some((re) => re.test(tail))
@@ -351,7 +385,6 @@ export class PtyManager {
     // Plain shells have no such protocol — fall back to "any real output
     // (not a resize/focus repaint) means running", and demote to idle once
     // output settles and no descendant process remains.
-    const sinceRepaintTrigger = now - Math.max(managed.lastResize, managed.lastMetaInput)
     if (sinceRepaintTrigger > REPAINT_SUPPRESS_MS) {
       this.setStatus(managed, 'running')
     }
@@ -378,6 +411,7 @@ export class PtyManager {
     const managed = this.ptys.get(id)
     if (!managed) return
     if (managed.waitTimer) clearTimeout(managed.waitTimer)
+    forgetPty(managed.backend.pid)
     this.setStatus(managed, 'exited')
     this.setApp(managed, null)
     // Deliver any output still sitting in the coalescing buffer before the
@@ -470,7 +504,7 @@ export class PtyManager {
   // Known-app terminals (Claude Code) never go quiet on their own — the
   // blinking cursor repaints every ~500ms even at rest — so idle can't be
   // driven by "no output for N ms". Instead: once a real working signal
-  // hasn't reappeared for OUTPUT_IDLE_MS, the terminal has settled.
+  // hasn't reappeared for APP_IDLE_MS, the terminal has settled.
   //
   // Only 'running' is swept. 'waiting' is left sticky: a permission prompt or
   // menu matches a WAIT_PATTERN exactly once and then sits static on screen —
@@ -492,7 +526,7 @@ export class PtyManager {
     const now = Date.now()
     for (const m of this.ptys.values()) {
       if (m.app === null) continue
-      if (m.status === 'running' && now - m.lastAppSignal > OUTPUT_IDLE_MS) {
+      if (m.status === 'running' && now - m.lastAppSignal > APP_IDLE_MS) {
         this.setStatus(m, 'idle')
       }
     }
@@ -589,6 +623,7 @@ export class PtyManager {
       return
     }
     if (m.waitTimer) clearTimeout(m.waitTimer)
+    forgetPty(m.backend.pid)
     this.dataBuf.delete(id)
     try {
       m.backend.kill()

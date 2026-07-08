@@ -3,6 +3,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { getStore } from './store'
 import { PtyManager } from './pty-manager'
+import { sweepOrphans } from './pty-registry'
 import { registerIpc } from './ipc'
 import { runBroker } from './broker'
 import { initUpdater } from './updater'
@@ -175,9 +176,18 @@ if (IS_BROKER) {
 
   app.whenReady().then(() => {
     initConfirmBridge()
+    // Reap PTYs orphaned by a prior force-kill (Task Manager, crash, shutdown)
+    // before we spawn any new ones — killAll never ran, so Windows left them
+    // (and their npm/agent children) running.
+    const reapedOrphans = sweepOrphans()
     ptyManager = new PtyManager(() => mainWindow)
     registerIpc(ptyManager, () => mainWindow)
     createWindow()
+    if (reapedOrphans > 0) {
+      mainWindow?.webContents.once('did-finish-load', () =>
+        mainWindow?.webContents.send('app:orphans-cleaned', reapedOrphans)
+      )
+    }
     initUpdater(() => mainWindow, {
       hasLiveTerminals: () => ptyManager?.hasAny() ?? false,
       prepareQuit: () => {

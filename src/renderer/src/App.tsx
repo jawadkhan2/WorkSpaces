@@ -124,6 +124,16 @@ export default function App(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // A prior force-kill left terminals orphaned; startup reaped them.
+  useEffect(() => {
+    return window.api.onOrphansCleaned((count) =>
+      pushToast(
+        `Cleaned up ${count} terminal${count === 1 ? '' : 's'} left running by a previous force-quit.`
+      )
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // The main process (quit, restart-to-update, external links) asks the
   // renderer to show its custom modal instead of a native OS dialog. A
   // confirm:cancel means main gave up waiting — dismiss the dead modal.
